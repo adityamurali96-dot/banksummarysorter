@@ -219,8 +219,17 @@ SKIP_ROW_KEYWORDS: List[str] = [
 # Haiku API Settings
 # =============================================================================
 
+# Using Claude 3.5 Haiku (latest model)
 HAIKU_MODEL: str = "claude-3-5-haiku-latest"
 HAIKU_MAX_TOKENS: int = 100
+
+# =============================================================================
+# Application Info
+# =============================================================================
+
+APP_NAME: str = "Bank Statement Processor"
+APP_VERSION: str = "1.0.0"
+APP_AUTHOR: str = "V Raghavendran and Co."
 
 # =============================================================================
 # Categorization Settings

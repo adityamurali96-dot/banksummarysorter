@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name }} - {{ app_author }}</title>
+
+    <!-- Google Fonts - Crimson Pro -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- Header Section -->
+    <header class="header">
+        <div class="container">
+            <h1 class="title-slide">Bank Statement Processor</h1>
+            <p class="subtitle">Intelligent Transaction Categorization System</p>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="container">
+
+            <!-- Upload Section -->
+            <section class="section" id="upload-section">
+                <h2 class="section-heading">Upload Statement</h2>
+                <div class="accent-line"></div>
+
+                <div class="upload-area" id="drop-zone">
+                    <div class="upload-icon">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#003366" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17,8 12,3 7,8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                    </div>
+                    <p class="upload-text">Drag & drop your bank statement here</p>
+                    <p class="upload-subtext">or click to browse</p>
+                    <p class="upload-formats">Supported formats: CSV, XLSX</p>
+                    <input type="file" id="file-input" accept=".csv,.xlsx,.xls" hidden>
+                </div>
+
+                <div class="file-info" id="file-info" style="display: none;">
+                    <span class="file-name" id="file-name"></span>
+                    <button class="btn-clear" id="clear-file">Clear</button>
+                </div>
+            </section>
+
+            <!-- Options Section -->
+            <section class="section" id="options-section">
+                <h2 class="section-heading">Processing Options</h2>
+                <div class="accent-line"></div>
+
+                <div class="options-grid">
+                    <div class="option-group">
+                        <label class="option-label" for="confidence-threshold">
+                            Confidence Threshold
+                        </label>
+                        <div class="slider-container">
+                            <input type="range" id="confidence-threshold"
+                                   min="0.5" max="0.95" step="0.05" value="0.8">
+                            <span class="slider-value" id="threshold-value">80%</span>
+                        </div>
+                        <p class="option-help">Transactions below this threshold will be flagged for review</p>
+                    </div>
+
+                    <div class="option-group">
+                        <label class="option-label">
+                            <input type="checkbox" id="use-api" class="checkbox">
+                            <span class="checkbox-label">Use AI Categorization</span>
+                        </label>
+                        <p class="option-help">Use Claude Haiku for uncategorized transactions (requires API key)</p>
+                    </div>
+                </div>
+
+                <div class="process-container">
+                    <button class="btn-primary" id="process-btn" disabled>
+                        Process Statement
+                    </button>
+                </div>
+            </section>
+
+            <!-- Progress Section -->
+            <section class="section" id="progress-section" style="display: none;">
+                <h2 class="section-heading">Processing</h2>
+                <div class="accent-line"></div>
+
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <p class="progress-text" id="progress-text">Uploading file...</p>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section class="section" id="results-section" style="display: none;">
+                <h2 class="section-heading">Results Summary</h2>
+                <div class="accent-line"></div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-total">0</span>
+                        <span class="stat-label">Total Transactions</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-rules">0</span>
+                        <span class="stat-label">Rule-based Matches</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-ai">0</span>
+                        <span class="stat-label">AI Categorized</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-flagged">0</span>
+                        <span class="stat-label">Flagged for Review</span>
+                    </div>
+                </div>
+
+                <div class="financial-summary">
+                    <div class="summary-row">
+                        <span class="summary-label">Total Debits:</span>
+                        <span class="summary-value debit" id="sum-debits">₹0.00</span>
+                    </div>
+                    <div class="summary-row">
+                        <span class="summary-label">Total Credits:</span>
+                        <span class="summary-value credit" id="sum-credits">₹0.00</span>
+                    </div>
+                    <div class="summary-row">
+                        <span class="summary-label">Net Flow:</span>
+                        <span class="summary-value" id="sum-net">₹0.00</span>
+                    </div>
+                    <div class="summary-row">
+                        <span class="summary-label">Date Range:</span>
+                        <span class="summary-value" id="date-range">N/A</span>
+                    </div>
+                </div>
+
+                <div class="download-container">
+                    <button class="btn-primary" id="download-btn">
+                        Download Categorized Excel
+                    </button>
+                </div>
+            </section>
+
+            <!-- Preview Section -->
+            <section class="section" id="preview-section" style="display: none;">
+                <h2 class="section-heading">Transaction Preview</h2>
+                <div class="accent-line"></div>
+
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Description</th>
+                                <th>Debit</th>
+                                <th>Credit</th>
+                                <th>Category</th>
+                                <th>Source</th>
+                            </tr>
+                        </thead>
+                        <tbody id="preview-body">
+                        </tbody>
+                    </table>
+                </div>
+                <p class="preview-note" id="preview-note"></p>
+            </section>
+
+            <!-- Categories Reference -->
+            <section class="section" id="categories-section">
+                <h2 class="section-heading">Supported Categories</h2>
+                <div class="accent-line"></div>
+
+                <div class="categories-grid">
+                    {% for category, subcategories in categories.items() %}
+                    {% if category != 'Review Required' %}
+                    <div class="category-card">
+                        <h3 class="category-name">{{ category }}</h3>
+                        <ul class="subcategory-list">
+                            {% for sub in subcategories %}
+                            <li>{{ sub }}</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+            </section>
+
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p class="footer-text">
+                Built by <strong>{{ app_author }}</strong> |
+                {{ app_name }} v{{ app_version }} |
+                Powered by Claude Haiku
+            </p>
+        </div>
+    </footer>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
