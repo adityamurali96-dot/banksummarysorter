@@ -248,6 +248,7 @@ RULE_BASED_CONFIDENCE: float = 0.95
 # =============================================================================
 
 FILE_ENCODINGS: List[str] = [
+    "utf-8-sig",      # Excel CSV with BOM
     "utf-8",
     "cp1252",
     "iso-8859-1",

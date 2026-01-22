@@ -337,12 +337,21 @@ class CSVParser(BaseParser):
 
         return mapping
 
+    def _is_transaction_start(self, content: str) -> bool:
+        """
+        Check if content marks the start of a new transaction.
+        Looks for datetime patterns like "12-07-2024 12:22" or "29-07-2024 08:42".
+        """
+        # Pattern for DD-MM-YYYY HH:MM format
+        datetime_pattern = r'^\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}'
+        return bool(re.match(datetime_pattern, content))
+
     def _extract_transactions_docling(self, rows: List[List[str]]) -> List[Transaction]:
         """
         Extract transactions from Docling format.
         Handles both:
         - Table rows (pipe-separated fields)
-        - Text rows (multi-row transactions between #### delimiters)
+        - Text rows (multi-row transactions, detected by datetime pattern start)
         """
         transactions: List[Transaction] = []
         type_col = self._docling_type_col
@@ -353,11 +362,15 @@ class CSVParser(BaseParser):
 
         # State for text-format multi-row transactions
         current_text_fields: List[str] = []
-        in_transaction = False
         transaction_start_row = 0
 
         # Track if we've seen the table header
         table_header_seen = False
+
+        # Skip header rows (like "Txn Date", "Value Date", etc.)
+        skip_header_keywords = ['txn date', 'value date', 'cheque no', 'description',
+                                'branch', 'code', 'debit', 'credit', 'balance',
+                                'page', 'disclaimer', 'account statement', 'current & saving']
 
         for row_idx, row in enumerate(rows[1:], start=2):
             if len(row) <= max(type_col, content_col):
@@ -371,21 +384,40 @@ class CSVParser(BaseParser):
 
             # === Handle TEXT rows (multi-row format) ===
             if row_type == 'text':
-                if content.startswith('###') or content == '############':
-                    # Delimiter - either start or end of transaction
-                    if in_transaction and current_text_fields:
-                        # End of transaction - parse collected fields
+                # Skip header/metadata rows
+                content_lower = content.lower()
+                if any(kw in content_lower for kw in skip_header_keywords):
+                    continue
+
+                # Skip page markers like "Page 1 of 4"
+                if re.match(r'^page\s+\d+\s+of\s+\d+', content_lower):
+                    continue
+
+                # Skip end of statement markers
+                if 'end of statement' in content_lower:
+                    continue
+
+                # Check for delimiter pattern (if present)
+                if content.startswith('###'):
+                    if current_text_fields:
                         txn = self._parse_text_transaction(current_text_fields, transaction_start_row, row_idx)
                         if txn:
                             transactions.append(txn)
                         current_text_fields = []
+                    continue
 
-                    # Toggle state
-                    in_transaction = not in_transaction
-                    if in_transaction:
-                        transaction_start_row = row_idx
-                elif in_transaction:
-                    # Collect field value
+                # Check if this is a new transaction start (datetime pattern)
+                if self._is_transaction_start(content):
+                    # Save previous transaction if exists
+                    if current_text_fields:
+                        txn = self._parse_text_transaction(current_text_fields, transaction_start_row, row_idx)
+                        if txn:
+                            transactions.append(txn)
+                    # Start new transaction
+                    current_text_fields = [content]
+                    transaction_start_row = row_idx
+                elif current_text_fields:
+                    # Continue collecting fields for current transaction
                     current_text_fields.append(content)
 
             # === Handle TABLE rows (pipe-separated format) ===
@@ -403,8 +435,8 @@ class CSVParser(BaseParser):
                     transactions.append(txn)
 
         # Handle any remaining text transaction
-        if in_transaction and current_text_fields:
-            txn = self._parse_text_transaction(current_text_fields, transaction_start_row, row_idx)
+        if current_text_fields:
+            txn = self._parse_text_transaction(current_text_fields, transaction_start_row, len(rows))
             if txn:
                 transactions.append(txn)
 
@@ -419,11 +451,11 @@ class CSVParser(BaseParser):
         """
         Parse a transaction from collected text fields.
 
-        Expected field order (may vary):
-        [Date, Cheque No, Description, Reference, Branch, Debit/Credit, Balance]
+        Expected field order for Canara Bank format:
+        [Txn DateTime, Value Date, Cheque No (opt), Description..., Branch Code, Debit/Credit, Balance]
 
         We identify fields by their format:
-        - Date: parseable as date
+        - Date: parseable as date (skip datetime with time, use value date)
         - Amount: contains numbers with commas (Indian format)
         - Description: text that's not date or amount
         """
@@ -434,30 +466,55 @@ class CSVParser(BaseParser):
         description_parts: List[str] = []
         amounts: List[float] = []
 
-        for field in fields:
+        # Track if we've seen the transaction datetime (first field usually)
+        seen_txn_datetime = False
+
+        for i, field in enumerate(fields):
             field = field.strip()
             if not field:
                 continue
 
-            # Try to parse as date
+            # Skip the transaction datetime (first field like "12-07-2024 12:22")
+            # We want the Value Date instead which is more readable
+            if i == 0 and re.match(r'^\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}', field):
+                seen_txn_datetime = True
+                continue
+
+            # Try to parse as date (this will be the Value Date)
             if date_val is None:
                 parsed = parse_date(field)
                 if parsed:
                     date_val = parsed
                     continue
 
-            # Check if it's an amount (Indian format: 2,19,436.87)
-            if has_valid_amount(field) and re.search(r'[\d,]+\.?\d*', field):
-                # Verify it's primarily numeric
-                numeric_chars = sum(1 for c in field if c.isdigit() or c in ',.₹')
-                if numeric_chars > len(field) * 0.5:
-                    amounts.append(parse_amount(field))
-                    continue
+            # Check if it's an amount (Indian format: 2,19,436.87 or just 303)
+            # Be more lenient with amount detection
+            if re.match(r'^[\d,]+\.?\d*$', field.replace(' ', '')):
+                try:
+                    amt = parse_amount(field)
+                    if amt is not None:
+                        amounts.append(amt)
+                        continue
+                except:
+                    pass
+
+            # Skip cheque numbers (all zeros or IB ITG patterns)
+            if re.match(r'^0+$', field):
+                continue
+            if field.startswith('IB ITG'):
+                description_parts.append(field)
+                continue
+
+            # Skip small numeric codes that look like branch codes (3 digits or less)
+            if re.match(r'^\d{1,3}$', field):
+                continue
+
+            # Skip scientific notation (like 4.21218E+11)
+            if re.match(r'^[\d.]+E[+-]?\d+$', field, re.IGNORECASE):
+                continue
 
             # Otherwise treat as description/reference
-            # Skip pure numeric strings that aren't amounts (like cheque numbers)
-            if not field.replace(' ', '').isdigit():
-                description_parts.append(field)
+            description_parts.append(field)
 
         if date_val is None:
             return None
@@ -470,9 +527,16 @@ class CSVParser(BaseParser):
 
         if len(amounts) >= 2:
             balance = amounts[-1]
-            # The transaction amount - need context to know if debit or credit
-            # For now, assume it's debit (most common for expenses)
-            debit = amounts[-2] if amounts[-2] != 0 else None
+            # The transaction amount
+            txn_amount = amounts[-2] if amounts[-2] != 0 else None
+            if txn_amount:
+                # Try to determine if debit or credit from description
+                desc_lower = ' '.join(description_parts).lower()
+                is_credit = any(kw in desc_lower for kw in ['cr', 'credit', 'neft cr', 'salary', 'refund', 'interest'])
+                if is_credit:
+                    credit = txn_amount
+                else:
+                    debit = txn_amount
         elif len(amounts) == 1:
             balance = amounts[0]
 
