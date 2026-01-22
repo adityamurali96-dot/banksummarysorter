@@ -70,6 +70,12 @@ class CSVParser(BaseParser):
         self._encoding: Optional[str] = None
         self._detected_columns: Dict[str, int] = {}
 
+        # Docling format support
+        self._is_docling_format: bool = False
+        self._docling_type_col: Optional[int] = None
+        self._docling_content_col: Optional[int] = None
+        self._docling_field_mapping: Dict[str, int] = {}  # For table format
+
     def parse(self) -> List[Transaction]:
         """
         Parse the CSV file and return normalized transactions.
@@ -129,6 +135,13 @@ class CSVParser(BaseParser):
         Args:
             rows: All rows from the CSV
         """
+        # Check for Docling format first
+        if self._detect_docling_format(rows):
+            self._is_docling_format = True
+            self._setup_docling_columns(rows)
+            print("Detected Docling CSV format")
+            return
+
         # Find a potential header row
         header_row_idx = None
         header_row = None
@@ -231,6 +244,306 @@ class CSVParser(BaseParser):
                     return True
         return False
 
+    def _detect_docling_format(self, rows: List[List[str]]) -> bool:
+        """
+        Check if CSV uses Docling format.
+        Docling CSVs have 'type' column with values like 'text', 'table', 'section_header'.
+        """
+        if not rows or len(rows) < 2:
+            return False
+
+        # Check if any column header contains 'type'
+        header = [str(c).strip().lower() for c in rows[0]]
+        if 'type' not in header:
+            return False
+
+        # Verify by checking if rows have 'text' or 'table' type values
+        type_col = header.index('type')
+        for row in rows[1:min(20, len(rows))]:
+            if len(row) > type_col:
+                val = str(row[type_col]).strip().lower()
+                if val in ('text', 'table', 'section_header', 'page_header'):
+                    return True
+        return False
+
+    def _setup_docling_columns(self, rows: List[List[str]]) -> None:
+        """Identify Type and Content column positions."""
+        header = [str(c).strip().lower() for c in rows[0]]
+
+        for idx, col in enumerate(header):
+            if col == 'type':
+                self._docling_type_col = idx
+            elif col in ('content', 'text'):
+                self._docling_content_col = idx
+
+        # If no explicit content column, assume it's the last column
+        if self._docling_content_col is None:
+            self._docling_content_col = len(header) - 1
+
+        print(f"Docling columns - Type: {self._docling_type_col}, Content: {self._docling_content_col}")
+
+        # Detect which format is predominant and find field mappings
+        self._analyze_docling_structure(rows)
+
+    def _analyze_docling_structure(self, rows: List[List[str]]) -> None:
+        """
+        Analyze Docling CSV to determine:
+        1. If table rows exist with pipe-separated headers
+        2. The field order for text-based multi-row transactions
+        """
+        type_col = self._docling_type_col
+        content_col = self._docling_content_col
+
+        if type_col is None or content_col is None:
+            return
+
+        # Look for table header row (contains field names with pipes)
+        for row in rows[1:]:
+            if len(row) <= max(type_col, content_col):
+                continue
+
+            row_type = str(row[type_col]).strip().lower()
+            content = str(row[content_col]).strip()
+
+            if row_type == 'table' and '|' in content:
+                # Check if this looks like a header (contains keywords)
+                content_lower = content.lower()
+                if any(kw in content_lower for kw in ['date', 'description', 'debit', 'credit', 'balance']):
+                    self._docling_field_mapping = self._parse_pipe_header(content)
+                    print(f"Found table header mapping: {self._docling_field_mapping}")
+                    break
+
+    def _parse_pipe_header(self, header_content: str) -> Dict[str, int]:
+        """Parse pipe-separated header to map field names to indices."""
+        fields = [f.strip().lower() for f in header_content.split('|')]
+        mapping: Dict[str, int] = {}
+
+        for idx, field in enumerate(fields):
+            # Date column (prefer txn date over value date)
+            if 'date' not in mapping and self._matches_keywords(field, DATE_COLUMN_KEYWORDS):
+                mapping['date'] = idx
+            # Description
+            if 'description' not in mapping and self._matches_keywords(field, DESCRIPTION_COLUMN_KEYWORDS):
+                mapping['description'] = idx
+            # Debit
+            if 'debit' not in mapping and self._matches_keywords(field, DEBIT_COLUMN_KEYWORDS):
+                mapping['debit'] = idx
+            # Credit
+            if 'credit' not in mapping and self._matches_keywords(field, CREDIT_COLUMN_KEYWORDS):
+                mapping['credit'] = idx
+            # Balance
+            if 'balance' not in mapping and self._matches_keywords(field, BALANCE_COLUMN_KEYWORDS):
+                mapping['balance'] = idx
+
+        return mapping
+
+    def _extract_transactions_docling(self, rows: List[List[str]]) -> List[Transaction]:
+        """
+        Extract transactions from Docling format.
+        Handles both:
+        - Table rows (pipe-separated fields)
+        - Text rows (multi-row transactions between #### delimiters)
+        """
+        transactions: List[Transaction] = []
+        type_col = self._docling_type_col
+        content_col = self._docling_content_col
+
+        if type_col is None or content_col is None:
+            return transactions
+
+        # State for text-format multi-row transactions
+        current_text_fields: List[str] = []
+        in_transaction = False
+        transaction_start_row = 0
+
+        # Track if we've seen the table header
+        table_header_seen = False
+
+        for row_idx, row in enumerate(rows[1:], start=2):
+            if len(row) <= max(type_col, content_col):
+                continue
+
+            row_type = str(row[type_col]).strip().lower()
+            content = str(row[content_col]).strip()
+
+            if not content:
+                continue
+
+            # === Handle TEXT rows (multi-row format) ===
+            if row_type == 'text':
+                if content.startswith('###') or content == '############':
+                    # Delimiter - either start or end of transaction
+                    if in_transaction and current_text_fields:
+                        # End of transaction - parse collected fields
+                        txn = self._parse_text_transaction(current_text_fields, transaction_start_row, row_idx)
+                        if txn:
+                            transactions.append(txn)
+                        current_text_fields = []
+
+                    # Toggle state
+                    in_transaction = not in_transaction
+                    if in_transaction:
+                        transaction_start_row = row_idx
+                elif in_transaction:
+                    # Collect field value
+                    current_text_fields.append(content)
+
+            # === Handle TABLE rows (pipe-separated format) ===
+            elif row_type == 'table' and '|' in content:
+                # Skip header row
+                if not table_header_seen:
+                    content_lower = content.lower()
+                    if any(kw in content_lower for kw in ['date', 'description', 'debit', 'credit']):
+                        table_header_seen = True
+                        continue
+
+                # Parse data row
+                txn = self._parse_table_transaction(content, row_idx)
+                if txn:
+                    transactions.append(txn)
+
+        # Handle any remaining text transaction
+        if in_transaction and current_text_fields:
+            txn = self._parse_text_transaction(current_text_fields, transaction_start_row, row_idx)
+            if txn:
+                transactions.append(txn)
+
+        return transactions
+
+    def _parse_text_transaction(
+        self,
+        fields: List[str],
+        start_row: int,
+        end_row: int
+    ) -> Optional[Transaction]:
+        """
+        Parse a transaction from collected text fields.
+
+        Expected field order (may vary):
+        [Date, Cheque No, Description, Reference, Branch, Debit/Credit, Balance]
+
+        We identify fields by their format:
+        - Date: parseable as date
+        - Amount: contains numbers with commas (Indian format)
+        - Description: text that's not date or amount
+        """
+        if len(fields) < 3:
+            return None
+
+        date_val = None
+        description_parts: List[str] = []
+        amounts: List[float] = []
+
+        for field in fields:
+            field = field.strip()
+            if not field:
+                continue
+
+            # Try to parse as date
+            if date_val is None:
+                parsed = parse_date(field)
+                if parsed:
+                    date_val = parsed
+                    continue
+
+            # Check if it's an amount (Indian format: 2,19,436.87)
+            if has_valid_amount(field) and re.search(r'[\d,]+\.?\d*', field):
+                # Verify it's primarily numeric
+                numeric_chars = sum(1 for c in field if c.isdigit() or c in ',.₹')
+                if numeric_chars > len(field) * 0.5:
+                    amounts.append(parse_amount(field))
+                    continue
+
+            # Otherwise treat as description/reference
+            # Skip pure numeric strings that aren't amounts (like cheque numbers)
+            if not field.replace(' ', '').isdigit():
+                description_parts.append(field)
+
+        if date_val is None:
+            return None
+
+        # Determine debit/credit from amounts
+        # Usually: second-to-last is debit OR credit, last is balance
+        debit = None
+        credit = None
+        balance = None
+
+        if len(amounts) >= 2:
+            balance = amounts[-1]
+            # The transaction amount - need context to know if debit or credit
+            # For now, assume it's debit (most common for expenses)
+            debit = amounts[-2] if amounts[-2] != 0 else None
+        elif len(amounts) == 1:
+            balance = amounts[0]
+
+        description = ' '.join(description_parts)
+
+        return Transaction(
+            date=date_val,
+            description=description,
+            debit=debit,
+            credit=credit,
+            balance=balance,
+            raw_text=' | '.join(fields),
+            row_numbers=list(range(start_row, end_row + 1))
+        )
+
+    def _parse_table_transaction(self, content: str, row_idx: int) -> Optional[Transaction]:
+        """Parse a pipe-separated table row into a transaction."""
+        fields = [f.strip() for f in content.split('|')]
+        fm = self._docling_field_mapping
+
+        if not fm:
+            return None
+
+        # Extract date
+        date_idx = fm.get('date')
+        if date_idx is None or date_idx >= len(fields):
+            return None
+
+        date_val = parse_date(fields[date_idx])
+        if date_val is None:
+            return None
+
+        # Extract other fields safely
+        def get_field(key: str) -> str:
+            idx = fm.get(key)
+            if idx is not None and idx < len(fields):
+                return fields[idx]
+            return ''
+
+        description = get_field('description')
+
+        debit = None
+        credit = None
+        balance = None
+
+        debit_str = get_field('debit')
+        if debit_str and has_valid_amount(debit_str):
+            debit = abs(parse_amount(debit_str))
+            if debit == 0:
+                debit = None
+
+        credit_str = get_field('credit')
+        if credit_str and has_valid_amount(credit_str):
+            credit = abs(parse_amount(credit_str))
+            if credit == 0:
+                credit = None
+
+        balance_str = get_field('balance')
+        if balance_str and has_valid_amount(balance_str):
+            balance = parse_amount(balance_str)
+
+        return Transaction(
+            date=date_val,
+            description=description,
+            debit=debit,
+            credit=credit,
+            balance=balance,
+            raw_text=content,
+            row_numbers=[row_idx]
+        )
+
     def _score_header_row(self, row: List[str]) -> int:
         """
         Score a row based on how likely it is to be a header row.
@@ -266,6 +579,10 @@ class CSVParser(BaseParser):
         Returns:
             List of Transaction objects
         """
+        # Use Docling extraction if detected
+        if self._is_docling_format:
+            return self._extract_transactions_docling(rows)
+
         transactions: List[Transaction] = []
         current_txn: Optional[Transaction] = None
 
