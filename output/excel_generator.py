@@ -2,11 +2,12 @@
 Excel output generator for categorized bank transactions.
 
 Creates a formatted Excel workbook with multiple sheets:
-1. All Transactions
-2. Category Summary
-3. Monthly Summary
-4. Flagged for Review
-5. Statistics
+1. Reconciliation (sorted by date with balance verification)
+2. All Transactions
+3. Category Summary
+4. Monthly Summary
+5. Flagged for Review
+6. Statistics
 """
 from collections import defaultdict
 from datetime import date
@@ -19,12 +20,15 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.worksheet.worksheet import Worksheet
 
 from parsers.base_parser import Transaction
+from reconciler.balance_checker import BalanceReconciler
 
 
 # Style definitions
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 FLAGGED_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+MISMATCH_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")  # Red for mismatches
+SUCCESS_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # Green for matches
 ALT_ROW_FILL = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 THIN_BORDER = Border(
     left=Side(style='thin'),
@@ -62,6 +66,7 @@ def generate_output_excel(
         del wb['Sheet']
 
     # Create sheets
+    _create_reconciliation_sheet(wb, transactions)  # NEW: Balance verification sheet
     _create_all_transactions_sheet(wb, transactions, include_raw_text)
     _create_category_summary_sheet(wb, transactions)
     _create_monthly_summary_sheet(wb, transactions)
@@ -73,6 +78,139 @@ def generate_output_excel(
     print(f"Excel file saved: {output_path}")
 
     return output_path
+
+
+def _create_reconciliation_sheet(wb: Workbook, transactions: List[Transaction]) -> None:
+    """
+    Create the Reconciliation sheet with balance verification.
+
+    This sheet:
+    1. Sorts transactions by date
+    2. Shows calculated running balance
+    3. Compares with displayed balance
+    4. Flags any mismatches (indicating possible missing transactions)
+    """
+    ws = wb.create_sheet("Reconciliation")
+
+    # Run reconciliation
+    reconciler = BalanceReconciler(tolerance=0.50)  # Allow 50 paise tolerance
+    results, summary = reconciler.reconcile(transactions)
+
+    # Headers
+    headers = [
+        "Date", "Description", "Debit", "Credit",
+        "Displayed Balance", "Calculated Balance", "Difference", "Status"
+    ]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center')
+
+    # Write summary at top (row 2-6)
+    summary_start = 2
+    ws.cell(row=summary_start, column=1, value="RECONCILIATION SUMMARY").font = Font(bold=True, size=12)
+
+    ws.cell(row=summary_start + 1, column=1, value="Opening Balance:")
+    ws.cell(row=summary_start + 1, column=2, value=summary.get('opening_balance', 0))
+    ws.cell(row=summary_start + 1, column=2).number_format = CURRENCY_FORMAT
+
+    ws.cell(row=summary_start + 2, column=1, value="Total Debits:")
+    ws.cell(row=summary_start + 2, column=2, value=summary.get('total_debits', 0))
+    ws.cell(row=summary_start + 2, column=2).number_format = CURRENCY_FORMAT
+
+    ws.cell(row=summary_start + 3, column=1, value="Total Credits:")
+    ws.cell(row=summary_start + 3, column=2, value=summary.get('total_credits', 0))
+    ws.cell(row=summary_start + 3, column=2).number_format = CURRENCY_FORMAT
+
+    ws.cell(row=summary_start + 4, column=1, value="Closing Balance:")
+    ws.cell(row=summary_start + 4, column=2, value=summary.get('closing_balance', 0))
+    ws.cell(row=summary_start + 4, column=2).number_format = CURRENCY_FORMAT
+
+    ws.cell(row=summary_start + 5, column=1, value="Transactions:")
+    ws.cell(row=summary_start + 5, column=2, value=summary.get('total_transactions', 0))
+
+    ws.cell(row=summary_start + 6, column=1, value="Mismatches Found:")
+    mismatches = summary.get('mismatches_found', 0)
+    ws.cell(row=summary_start + 6, column=2, value=mismatches)
+    if mismatches > 0:
+        ws.cell(row=summary_start + 6, column=2).fill = MISMATCH_FILL
+    else:
+        ws.cell(row=summary_start + 6, column=2).fill = SUCCESS_FILL
+
+    status = summary.get('reconciliation_status', 'Unknown')
+    ws.cell(row=summary_start + 7, column=1, value="Status:").font = Font(bold=True)
+    status_cell = ws.cell(row=summary_start + 7, column=2, value=status)
+    status_cell.font = Font(bold=True)
+    if "PASS" in status:
+        status_cell.fill = SUCCESS_FILL
+    else:
+        status_cell.fill = MISMATCH_FILL
+
+    # Data headers (row 11)
+    data_header_row = summary_start + 9
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=data_header_row, column=col, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center')
+
+    # Write transaction data (starting row 12)
+    data_start_row = data_header_row + 1
+    for row_idx, result in enumerate(results, data_start_row):
+        txn = result.transaction
+
+        # Date
+        cell = ws.cell(row=row_idx, column=1, value=txn.date)
+        cell.number_format = DATE_FORMAT
+
+        # Description
+        ws.cell(row=row_idx, column=2, value=txn.description[:50] if txn.description else "")
+
+        # Debit
+        cell = ws.cell(row=row_idx, column=3, value=txn.debit)
+        if txn.debit:
+            cell.number_format = CURRENCY_FORMAT
+
+        # Credit
+        cell = ws.cell(row=row_idx, column=4, value=txn.credit)
+        if txn.credit:
+            cell.number_format = CURRENCY_FORMAT
+
+        # Displayed Balance (from statement)
+        cell = ws.cell(row=row_idx, column=5, value=txn.balance)
+        if txn.balance:
+            cell.number_format = CURRENCY_FORMAT
+
+        # Calculated Balance
+        cell = ws.cell(row=row_idx, column=6, value=result.calculated_balance)
+        cell.number_format = CURRENCY_FORMAT
+
+        # Difference
+        cell = ws.cell(row=row_idx, column=7, value=result.balance_difference)
+        if result.balance_difference:
+            cell.number_format = CURRENCY_FORMAT
+
+        # Status
+        if result.is_mismatch:
+            ws.cell(row=row_idx, column=8, value="⚠ MISMATCH")
+            # Highlight entire row in red
+            for col in range(1, 9):
+                ws.cell(row=row_idx, column=col).fill = MISMATCH_FILL
+        else:
+            ws.cell(row=row_idx, column=8, value="✓ OK")
+            # Light green for matching rows
+            if row_idx % 2 == 0:
+                for col in range(1, 9):
+                    ws.cell(row=row_idx, column=col).fill = ALT_ROW_FILL
+
+    # Column widths
+    column_widths = [12, 50, 15, 15, 18, 18, 15, 15]
+    for col, width in enumerate(column_widths, 1):
+        ws.column_dimensions[_get_column_letter(col)].width = width
+
+    # Freeze header row
+    ws.freeze_panes = f"A{data_header_row + 1}"
 
 
 def _create_all_transactions_sheet(
