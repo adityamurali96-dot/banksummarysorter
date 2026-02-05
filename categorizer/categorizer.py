@@ -70,11 +70,16 @@ class TransactionCategorizer:
         print(f"\nCategorizing {total} transactions...")
         print(f"Confidence threshold: {self.confidence_threshold}")
 
-        # First pass: rule-based categorization
+        # First pass: rule-based categorization with smart rule engine
         need_haiku: List[int] = []  # Indices of transactions needing Haiku
 
         for i, txn in enumerate(transactions):
-            result = rule_based_categorize(txn.description)
+            # Determine amount and credit/debit status for smart rules
+            is_credit = txn.credit is not None and txn.credit > 0
+            amount = txn.credit if is_credit else txn.debit
+
+            # Use the enhanced rule_based_categorize with amount info
+            result = rule_based_categorize(txn.description, amount, is_credit)
 
             if result:
                 category, subcategory, confidence = result
@@ -190,19 +195,26 @@ class TransactionCategorizer:
         """
         return self._stats.copy()
 
-    def categorize_single(self, description: str, is_debit: bool = True) -> Tuple[str, str, float, str]:
+    def categorize_single(
+        self,
+        description: str,
+        is_debit: bool = True,
+        amount: Optional[float] = None
+    ) -> Tuple[str, str, float, str]:
         """
         Categorize a single description (for testing/debugging).
 
         Args:
             description: Transaction description
             is_debit: Whether this is a debit transaction
+            amount: Optional transaction amount for amount-based rules
 
         Returns:
             Tuple of (category, subcategory, confidence, source)
         """
-        # Try rules first
-        result = rule_based_categorize(description)
+        # Try rules first (with amount for smart matching)
+        is_credit = not is_debit
+        result = rule_based_categorize(description, amount, is_credit)
         if result:
             return (*result, "rules")
 
@@ -234,18 +246,26 @@ def test_categorizer():
         confidence_threshold=0.8
     )
 
+    # Test cases: (description, is_debit, amount)
     test_descriptions = [
-        ("SAL FOR OCT 2024", True),
-        ("SWIGGY ORDER 12345", True),
-        ("AMAZON PAY INDIA", True),
-        ("ACME CORP PAYMENT", False),
-        ("RANDOM XYZ TRANSACTION", True),
+        ("SAL FOR OCT 2024", False, 75000),  # Salary - credit
+        ("SWIGGY ORDER 12345", True, 450),  # Food delivery
+        ("AMAZON PAY INDIA", True, 2500),  # Shopping
+        ("ACME CORP PAYMENT", False, 50000),  # Unknown credit
+        ("RANDOM XYZ TRANSACTION", True, 1000),  # Unknown
+        ("NEFT CR FROM JOHN", False, 25000),  # Credit transfer
+        ("UBER TRIP BANGALORE", True, 350),  # Cab
+        ("UBER EATS ORDER 123", True, 650),  # Food delivery
+        ("HDFC LIFE INSURANCE PREMIUM", True, 15000),  # Insurance
+        ("RENT PAYMENT APRIL", True, 25000),  # Rent
     ]
 
     print("\n--- Single Transaction Test ---\n")
-    for desc, is_debit in test_descriptions:
-        cat, subcat, conf, source = categorizer.categorize_single(desc, is_debit)
-        print(f"'{desc}' -> {cat} > {subcat} (conf: {conf:.2f}, source: {source})")
+    for item in test_descriptions:
+        desc, is_debit, amount = item
+        cat, subcat, conf, source = categorizer.categorize_single(desc, is_debit, amount)
+        txn_type = "DR" if is_debit else "CR"
+        print(f"'{desc}' [{txn_type}] -> {cat} > {subcat} (conf: {conf:.2f}, source: {source})")
     print()
 
 

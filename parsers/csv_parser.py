@@ -6,8 +6,10 @@ Handles:
 - Repeated headers on each page
 - Page numbers as rows
 - Garbage rows
+- Multiple bank formats via bank profiles
 """
 import csv
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,10 +24,25 @@ from config import (
     FILE_ENCODINGS,
     HEADER_KEYWORDS,
     SKIP_ROW_KEYWORDS,
+    get_config,
 )
 from normalizer.amount_parser import parse_amount, has_valid_amount, parse_debit_credit
 from normalizer.date_parser import parse_date, is_valid_date
 from parsers.base_parser import BaseParser, Transaction, ValidationIssue
+
+# Import bank profiles for flexible parsing
+try:
+    from parsers.bank_profiles import (
+        BankProfile,
+        get_profile_manager,
+        detect_bank,
+        get_bank_profile,
+        GENERIC_PROFILE,
+    )
+    _HAS_BANK_PROFILES = True
+except ImportError:
+    _HAS_BANK_PROFILES = False
+    GENERIC_PROFILE = None
 
 
 class CSVParser(BaseParser):
@@ -35,6 +52,8 @@ class CSVParser(BaseParser):
     Uses date-anchored detection to handle multi-row transactions:
     - If date column has a valid date -> starts a NEW transaction
     - If date column is empty/invalid -> CONTINUATION of previous transaction
+
+    Supports bank profiles for flexible parsing across different bank formats.
     """
 
     def __init__(
@@ -46,6 +65,8 @@ class CSVParser(BaseParser):
         credit_col: Optional[int] = None,
         amount_col: Optional[int] = None,
         balance_col: Optional[int] = None,
+        bank_name: Optional[str] = None,
+        auto_detect_bank: bool = True,
     ):
         """
         Initialize the CSV parser.
@@ -58,6 +79,8 @@ class CSVParser(BaseParser):
             credit_col: Column index for credit amount
             amount_col: Column index for single amount (if not separate debit/credit)
             balance_col: Column index for balance
+            bank_name: Optional bank name for profile selection
+            auto_detect_bank: Whether to auto-detect bank from content
         """
         super().__init__(filepath)
         self.date_col = date_col
@@ -76,6 +99,16 @@ class CSVParser(BaseParser):
         self._docling_content_col: Optional[int] = None
         self._docling_field_mapping: Dict[str, int] = {}  # For table format
 
+        # Bank profile support
+        self._bank_name = bank_name
+        self._auto_detect_bank = auto_detect_bank
+        self._bank_profile: Optional[Any] = None  # Will be BankProfile if available
+
+        # Load bank profile if specified
+        if _HAS_BANK_PROFILES and bank_name:
+            self._bank_profile = get_bank_profile(bank_name)
+            print(f"Using bank profile: {self._bank_profile.name}")
+
     def parse(self) -> List[Transaction]:
         """
         Parse the CSV file and return normalized transactions.
@@ -93,6 +126,14 @@ class CSVParser(BaseParser):
             return []
 
         print(f"Read {len(rows)} rows from CSV")
+
+        # Auto-detect bank profile if enabled and not already set
+        if _HAS_BANK_PROFILES and self._auto_detect_bank and self._bank_profile is None:
+            self._bank_profile = detect_bank(
+                rows=rows,
+                filename=os.path.basename(self.filepath)
+            )
+            print(f"Auto-detected bank profile: {self._bank_profile.name}")
 
         # If columns not specified, try to auto-detect
         if self.date_col is None:
@@ -340,11 +381,30 @@ class CSVParser(BaseParser):
     def _is_transaction_start(self, content: str) -> bool:
         """
         Check if content marks the start of a new transaction.
-        Looks for datetime patterns like "12-07-2024 12:22" or "29-07-2024 08:42".
+
+        Uses bank profile patterns if available, otherwise falls back to
+        common datetime patterns.
         """
-        # Pattern for DD-MM-YYYY HH:MM format
-        datetime_pattern = r'^\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}'
-        return bool(re.match(datetime_pattern, content))
+        # Use bank profile pattern if available
+        if _HAS_BANK_PROFILES and self._bank_profile:
+            manager = get_profile_manager()
+            if manager.is_transaction_start(content, self._bank_profile):
+                return True
+
+        # Fallback: Multiple datetime patterns to handle different formats
+        datetime_patterns = [
+            r'^\d{2}[-/]\d{2}[-/]\d{4}\s+\d{2}:\d{2}(:\d{2})?',  # DD-MM-YYYY HH:MM or HH:MM:SS
+            r'^\d{4}[-/]\d{2}[-/]\d{2}\s+\d{2}:\d{2}(:\d{2})?',  # YYYY-MM-DD HH:MM
+            r'^\d{2}[-/]\d{2}[-/]\d{4}',  # DD-MM-YYYY (date only)
+            r'^\d{4}[-/]\d{2}[-/]\d{2}',  # YYYY-MM-DD (date only)
+            r'^\d{2}\s+[A-Za-z]{3}\s+\d{4}',  # DD MMM YYYY
+        ]
+
+        for pattern in datetime_patterns:
+            if re.match(pattern, content):
+                return True
+
+        return False
 
     def _extract_transactions_docling(self, rows: List[List[str]]) -> List[Transaction]:
         """
@@ -532,11 +592,27 @@ class CSVParser(BaseParser):
             if txn_amount:
                 # Try to determine if debit or credit from description
                 desc_lower = ' '.join(description_parts).lower()
-                is_credit = any(kw in desc_lower for kw in ['cr', 'credit', 'neft cr', 'salary', 'refund', 'interest'])
-                if is_credit:
-                    credit = txn_amount
+
+                # Use bank profile for credit/debit detection if available
+                if _HAS_BANK_PROFILES and self._bank_profile:
+                    manager = get_profile_manager()
+                    txn_type = manager.infer_credit_debit(desc_lower, self._bank_profile)
+                    if txn_type == "credit":
+                        credit = txn_amount
+                    else:
+                        debit = txn_amount
                 else:
-                    debit = txn_amount
+                    # Fallback: Extended keyword list for credit detection
+                    credit_keywords = [
+                        'cr', 'credit', 'neft cr', 'salary', 'refund', 'interest',
+                        'dividend', 'by transfer', 'by clearing', 'deposit', 'received',
+                        'inward', 'income', 'cashback', 'reversal'
+                    ]
+                    is_credit = any(kw in desc_lower for kw in credit_keywords)
+                    if is_credit:
+                        credit = txn_amount
+                    else:
+                        debit = txn_amount
         elif len(amounts) == 1:
             balance = amounts[0]
 
@@ -810,6 +886,8 @@ class CSVParser(BaseParser):
         """
         Check if a row is garbage (should be skipped).
 
+        Uses bank profile patterns if available for more accurate detection.
+
         Args:
             row: The row
 
@@ -818,9 +896,22 @@ class CSVParser(BaseParser):
         """
         row_text = " ".join(str(c).lower() for c in row if str(c).strip())
 
-        # Skip page number rows
-        if re.match(r'^page\s*\d+', row_text.strip()):
-            return True
+        # Use bank profile for skip detection if available
+        if _HAS_BANK_PROFILES and self._bank_profile:
+            manager = get_profile_manager()
+            if manager.should_skip_row(row, self._bank_profile):
+                return True
+
+        # Skip page number rows (multiple patterns)
+        page_patterns = [
+            r'^page\s*\d+',
+            r'page\s+\d+\s+of\s+\d+',
+            r'page\s+\d+[-/]\d+',
+            r'^\d+\s+of\s+\d+$',  # "1 of 5"
+        ]
+        for pattern in page_patterns:
+            if re.search(pattern, row_text.strip()):
+                return True
 
         # Skip rows that look like repeated headers
         header_score = self._score_header_row(row)
@@ -835,6 +926,12 @@ class CSVParser(BaseParser):
         # Skip rows with "continued" or similar
         if 'continued' in row_text or 'contd' in row_text:
             return True
+
+        # Skip disclaimer/footer rows
+        footer_keywords = ['disclaimer', 'terms and conditions', 'this is a computer generated']
+        for keyword in footer_keywords:
+            if keyword in row_text:
+                return True
 
         return False
 
