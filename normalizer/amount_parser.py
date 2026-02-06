@@ -251,8 +251,9 @@ def format_indian_currency(amount: Optional[float], include_symbol: bool = True)
     amount = abs(amount)
 
     # Split into integer and decimal parts
+    # Use round to avoid floating-point precision issues (e.g. 1000.00 - 1000 = 5.6e-11)
     integer_part = int(amount)
-    decimal_part = amount - integer_part
+    decimal_part = round(amount - integer_part, 2)
 
     # Format integer part with Indian grouping (lakhs format)
     int_str = str(integer_part)

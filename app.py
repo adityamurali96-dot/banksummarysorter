@@ -8,13 +8,14 @@ Built by V Raghavendran and Co.
 Optimized for Railway deployment.
 """
 import atexit
+import hashlib
 import logging
 import os
 import shutil
 import tempfile
 import uuid
 from datetime import datetime
-from threading import Thread
+from threading import Lock, Thread
 from time import sleep
 from typing import Dict, List, Optional
 
@@ -35,7 +36,12 @@ from output.excel_generator import generate_output_excel
 # =============================================================================
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
+# Use a deterministic fallback derived from a fixed seed so all gunicorn workers
+# share the same secret key.  In production, set FLASK_SECRET_KEY explicitly.
+app.secret_key = os.environ.get(
+    'FLASK_SECRET_KEY',
+    hashlib.sha256(b'bank-statement-processor-dev-key').hexdigest()
+)
 
 # Configure logging for production
 logging.basicConfig(
@@ -53,6 +59,7 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # Track output files for cleanup
 output_files: Dict[str, datetime] = {}
+output_files_lock = Lock()
 
 
 # =============================================================================
@@ -67,10 +74,11 @@ def cleanup_old_files():
             now = datetime.now()
             files_to_remove = []
 
-            for filename, created_at in list(output_files.items()):
-                age_minutes = (now - created_at).total_seconds() / 60
-                if age_minutes > 60:  # 1 hour
-                    files_to_remove.append(filename)
+            with output_files_lock:
+                for filename, created_at in list(output_files.items()):
+                    age_minutes = (now - created_at).total_seconds() / 60
+                    if age_minutes > 60:  # 1 hour
+                        files_to_remove.append(filename)
 
             for filename in files_to_remove:
                 filepath = os.path.join(OUTPUT_FOLDER, filename)
@@ -80,7 +88,8 @@ def cleanup_old_files():
                         logger.info(f"Cleaned up old file: {filename}")
                 except Exception as e:
                     logger.error(f"Error cleaning up {filename}: {e}")
-                output_files.pop(filename, None)
+                with output_files_lock:
+                    output_files.pop(filename, None)
 
         except Exception as e:
             logger.error(f"Error in cleanup task: {e}")
@@ -181,7 +190,8 @@ def upload_file():
         generate_output_excel(transactions, output_path)
 
         # Track output file for cleanup
-        output_files[output_filename] = datetime.now()
+        with output_files_lock:
+            output_files[output_filename] = datetime.now()
 
         # Calculate statistics
         stats = categorizer.get_statistics()
@@ -242,6 +252,12 @@ def download_file(filename):
         return jsonify({'error': 'Invalid filename'}), 400
 
     file_path = os.path.join(OUTPUT_FOLDER, filename)
+
+    # Security: verify the resolved path is within OUTPUT_FOLDER to prevent
+    # path traversal attacks (e.g. filename="../../etc/passwd")
+    if not os.path.realpath(file_path).startswith(os.path.realpath(OUTPUT_FOLDER)):
+        return jsonify({'error': 'Invalid filename'}), 400
+
     if not os.path.exists(file_path):
         return jsonify({'error': 'File not found or expired. Please process the file again.'}), 404
 

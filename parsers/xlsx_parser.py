@@ -325,8 +325,8 @@ class XLSXParser(BaseParser):
             List of sheet names
         """
         try:
-            xl = pd.ExcelFile(self.filepath)
-            return xl.sheet_names
+            with pd.ExcelFile(self.filepath) as xl:
+                return xl.sheet_names
         except Exception as e:
             print(f"Error reading sheet names: {e}")
             return []

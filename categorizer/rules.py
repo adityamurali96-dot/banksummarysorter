@@ -11,6 +11,8 @@ from config import RULE_BASED_CONFIDENCE
 # Type alias for category rules
 # Each rule is: (pattern, category, subcategory)
 CategoryRule = Tuple[str, str, str]
+# Compiled rule: (compiled_pattern, category, subcategory)
+CompiledCategoryRule = Tuple[re.Pattern, str, str]
 
 # =============================================================================
 # Category Rules
@@ -289,6 +291,15 @@ CATEGORY_RULES: List[CategoryRule] = [
     (r'office\s*supplies|stationery|printing', 'Business Expense', 'Office Supplies'),
 ]
 
+# Pre-compile all regex patterns at module load for better performance.
+# This avoids recompiling on every call to rule_based_categorize().
+COMPILED_RULES: List[CompiledCategoryRule] = []
+for _pattern, _category, _subcategory in CATEGORY_RULES:
+    try:
+        COMPILED_RULES.append((re.compile(_pattern, re.IGNORECASE), _category, _subcategory))
+    except re.error:
+        pass  # Skip invalid patterns at load time
+
 
 def rule_based_categorize(
     description: str
@@ -312,13 +323,9 @@ def rule_based_categorize(
     # Remove extra whitespace
     desc_lower = ' '.join(desc_lower.split())
 
-    for pattern, category, subcategory in CATEGORY_RULES:
-        try:
-            if re.search(pattern, desc_lower, re.IGNORECASE):
-                return (category, subcategory, RULE_BASED_CONFIDENCE)
-        except re.error:
-            # Skip invalid patterns
-            continue
+    for compiled_pattern, category, subcategory in COMPILED_RULES:
+        if compiled_pattern.search(desc_lower):
+            return (category, subcategory, RULE_BASED_CONFIDENCE)
 
     return None
 
@@ -339,12 +346,9 @@ def get_matching_rule(description: str) -> Optional[str]:
     desc_lower = description.lower().strip()
     desc_lower = ' '.join(desc_lower.split())
 
-    for pattern, category, subcategory in CATEGORY_RULES:
-        try:
-            if re.search(pattern, desc_lower, re.IGNORECASE):
-                return pattern
-        except re.error:
-            continue
+    for compiled_pattern, category, subcategory in COMPILED_RULES:
+        if compiled_pattern.search(desc_lower):
+            return compiled_pattern.pattern
 
     return None
 

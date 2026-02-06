@@ -8,7 +8,7 @@ Validates parsed transactions by:
 4. Flagging discrepancies to detect missing entries
 """
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional, Tuple
 from parsers.base_parser import Transaction
 
@@ -62,7 +62,7 @@ class BalanceReconciler:
             return [], {"error": "No transactions to reconcile"}
 
         # Sort transactions by date
-        sorted_txns = sorted(transactions, key=lambda t: t.date or datetime.min)
+        sorted_txns = sorted(transactions, key=lambda t: t.date or date.min)
 
         # Infer opening balance if not provided
         if opening_balance is None:
@@ -151,4 +151,4 @@ class BalanceReconciler:
         Returns:
             Sorted list of transactions
         """
-        return sorted(transactions, key=lambda t: t.date or datetime.min)
+        return sorted(transactions, key=lambda t: t.date or date.min)
