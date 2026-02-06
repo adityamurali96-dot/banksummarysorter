@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import uuid
 from datetime import datetime
-from threading import Thread
+from threading import Lock, Thread
 from time import sleep
 from typing import Dict, List, Optional
 
@@ -35,7 +35,16 @@ from output.excel_generator import generate_output_excel
 # =============================================================================
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(24).hex())
+_secret_key = os.environ.get('FLASK_SECRET_KEY')
+if not _secret_key:
+    import warnings
+    warnings.warn(
+        "FLASK_SECRET_KEY not set. Using a random key; sessions will not "
+        "persist across workers or restarts. Set FLASK_SECRET_KEY in production.",
+        stacklevel=1,
+    )
+    _secret_key = os.urandom(24).hex()
+app.secret_key = _secret_key
 
 # Configure logging for production
 logging.basicConfig(
@@ -51,8 +60,9 @@ MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB max file size
 
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
-# Track output files for cleanup
+# Track output files for cleanup (guarded by _output_files_lock)
 output_files: Dict[str, datetime] = {}
+_output_files_lock = Lock()
 
 
 # =============================================================================
@@ -67,10 +77,11 @@ def cleanup_old_files():
             now = datetime.now()
             files_to_remove = []
 
-            for filename, created_at in list(output_files.items()):
-                age_minutes = (now - created_at).total_seconds() / 60
-                if age_minutes > 60:  # 1 hour
-                    files_to_remove.append(filename)
+            with _output_files_lock:
+                for filename, created_at in list(output_files.items()):
+                    age_minutes = (now - created_at).total_seconds() / 60
+                    if age_minutes > 60:  # 1 hour
+                        files_to_remove.append(filename)
 
             for filename in files_to_remove:
                 filepath = os.path.join(OUTPUT_FOLDER, filename)
@@ -80,7 +91,8 @@ def cleanup_old_files():
                         logger.info(f"Cleaned up old file: {filename}")
                 except Exception as e:
                     logger.error(f"Error cleaning up {filename}: {e}")
-                output_files.pop(filename, None)
+                with _output_files_lock:
+                    output_files.pop(filename, None)
 
         except Exception as e:
             logger.error(f"Error in cleanup task: {e}")
@@ -181,7 +193,8 @@ def upload_file():
         generate_output_excel(transactions, output_path)
 
         # Track output file for cleanup
-        output_files[output_filename] = datetime.now()
+        with _output_files_lock:
+            output_files[output_filename] = datetime.now()
 
         # Calculate statistics
         stats = categorizer.get_statistics()
@@ -237,11 +250,15 @@ def upload_file():
 @app.route('/download/<filename>')
 def download_file(filename):
     """Download the processed Excel file."""
-    # Security: only allow alphanumeric filenames
+    # Security: only allow alphanumeric filenames with underscores and dots
     if not filename.replace('_', '').replace('.', '').isalnum():
         return jsonify({'error': 'Invalid filename'}), 400
 
-    file_path = os.path.join(OUTPUT_FOLDER, filename)
+    file_path = os.path.realpath(os.path.join(OUTPUT_FOLDER, filename))
+    # Ensure the resolved path is actually within OUTPUT_FOLDER
+    if not file_path.startswith(os.path.realpath(OUTPUT_FOLDER) + os.sep):
+        return jsonify({'error': 'Invalid filename'}), 400
+
     if not os.path.exists(file_path):
         return jsonify({'error': 'File not found or expired. Please process the file again.'}), 404
 

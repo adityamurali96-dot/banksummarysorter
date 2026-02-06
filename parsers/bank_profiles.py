@@ -215,43 +215,46 @@ CANARA_BANK_PROFILE = BankProfile(
     ],
 )
 
+_hdfc_defaults = _create_indian_bank_defaults()
+_hdfc_defaults["column_hints"] = ColumnHints(
+    date_keywords=["date", "value dt", "txn date"],
+    description_keywords=["narration", "description", "particulars"],
+    debit_keywords=["withdrawal amt", "debit"],
+    credit_keywords=["deposit amt", "credit"],
+    balance_keywords=["closing balance", "balance"],
+)
 HDFC_BANK_PROFILE = BankProfile(
     name="HDFC Bank",
     aliases=["hdfc", "hdfcbank", "hdfc ltd"],
-    **_create_indian_bank_defaults(),
-    column_hints=ColumnHints(
-        date_keywords=["date", "value dt", "txn date"],
-        description_keywords=["narration", "description", "particulars"],
-        debit_keywords=["withdrawal amt", "debit"],
-        credit_keywords=["deposit amt", "credit"],
-        balance_keywords=["closing balance", "balance"],
-    ),
+    **_hdfc_defaults,
 )
 
+_icici_defaults = _create_indian_bank_defaults()
+_icici_defaults["column_hints"] = ColumnHints(
+    date_keywords=["transaction date", "value date", "date"],
+    description_keywords=["transaction remarks", "particulars", "description"],
+    debit_keywords=["withdrawal amount", "debit"],
+    credit_keywords=["deposit amount", "credit"],
+    balance_keywords=["balance"],
+)
 ICICI_BANK_PROFILE = BankProfile(
     name="ICICI Bank",
     aliases=["icici", "icicibank"],
-    **_create_indian_bank_defaults(),
-    column_hints=ColumnHints(
-        date_keywords=["transaction date", "value date", "date"],
-        description_keywords=["transaction remarks", "particulars", "description"],
-        debit_keywords=["withdrawal amount", "debit"],
-        credit_keywords=["deposit amount", "credit"],
-        balance_keywords=["balance"],
-    ),
+    **_icici_defaults,
 )
 
+_sbi_defaults = _create_indian_bank_defaults()
+_sbi_defaults["column_hints"] = ColumnHints(
+    date_keywords=["txn date", "value date", "date"],
+    description_keywords=["description", "narration"],
+    debit_keywords=["debit", "withdrawal"],
+    credit_keywords=["credit", "deposit"],
+    balance_keywords=["balance"],
+)
 SBI_PROFILE = BankProfile(
     name="State Bank of India",
     aliases=["sbi", "state bank", "sbibank"],
-    **_create_indian_bank_defaults(),
-    column_hints=ColumnHints(
-        date_keywords=["txn date", "value date", "date"],
-        description_keywords=["description", "narration"],
-        debit_keywords=["debit", "withdrawal"],
-        credit_keywords=["credit", "deposit"],
-        balance_keywords=["balance"],
-    ),
+    **_sbi_defaults,
 )
 
 AXIS_BANK_PROFILE = BankProfile(
