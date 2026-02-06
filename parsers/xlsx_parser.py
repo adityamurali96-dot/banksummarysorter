@@ -47,7 +47,7 @@ class XLSXParser(BaseParser):
         """
         print(f"Parsing XLSX file: {self.filepath}")
 
-        # Read the entire Excel file first to find header row
+        # Read the entire Excel file once (headerless) to find the header row
         df_raw = self._read_excel_raw()
 
         if df_raw is None or df_raw.empty:
@@ -58,8 +58,9 @@ class XLSXParser(BaseParser):
         self._header_row = self._find_header_row(df_raw)
         print(f"Found header row at index: {self._header_row}")
 
-        # Re-read with correct header
-        df = self._read_excel_with_header()
+        # Derive the header-aware DataFrame from the already-loaded raw data
+        # instead of re-reading the file from disk.
+        df = self._apply_header(df_raw)
 
         if df is None or df.empty:
             print("Warning: No data found after header")
@@ -89,21 +90,25 @@ class XLSXParser(BaseParser):
             print(f"Error reading Excel file: {e}")
             return None
 
-    def _read_excel_with_header(self) -> Optional[pd.DataFrame]:
-        """Read Excel file with the identified header row."""
+    def _apply_header(self, df_raw: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """
+        Promote the identified header row to column names and drop rows above it.
+
+        Re-uses the already-loaded raw DataFrame instead of reading the file again.
+        """
         try:
-            df = pd.read_excel(
-                self.filepath,
-                sheet_name=self.sheet_name or 0,
-                header=self._header_row,
-                dtype=str,
-            )
-            # Clean column names
-            df.columns = [str(c).strip().lower() if pd.notna(c) else f"col_{i}"
-                         for i, c in enumerate(df.columns)]
+            header_idx = self._header_row or 0
+            # Use the header row values as column names
+            new_columns = [
+                str(c).strip().lower() if pd.notna(c) else f"col_{i}"
+                for i, c in enumerate(df_raw.iloc[header_idx])
+            ]
+            df = df_raw.iloc[header_idx + 1:].copy()
+            df.columns = new_columns
+            df.reset_index(drop=True, inplace=True)
             return df
         except Exception as e:
-            print(f"Error reading Excel file with header: {e}")
+            print(f"Error applying header to raw DataFrame: {e}")
             return None
 
     def _find_header_row(self, df: pd.DataFrame) -> int:

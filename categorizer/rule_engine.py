@@ -9,7 +9,7 @@ This module provides a flexible, configurable rule matching system that:
 """
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -32,7 +32,6 @@ class MatchResult:
     suggested_subcategory: str = ""
 
 
-@dataclass
 class KeywordMatcher:
     """
     Intelligent keyword matching with various strategies.
@@ -46,7 +45,7 @@ class KeywordMatcher:
     """
 
     # Common word variations/abbreviations to normalize
-    NORMALIZATIONS: Dict[str, List[str]] = field(default_factory=lambda: {
+    NORMALIZATIONS: Dict[str, List[str]] = {
         "amazon": ["amzn", "amazon.com", "amazon.in", "amazonpay"],
         "flipkart": ["flpkrt", "flipkart.com"],
         "swiggy": ["swigy", "swiggy.com"],
@@ -63,7 +62,7 @@ class KeywordMatcher:
         "deposit": ["dep", "dpt"],
         "interest": ["int", "intrst"],
         "insurance": ["insur", "ins"],
-    })
+    }
 
     def __init__(self):
         # Build reverse mapping for quick lookup
@@ -213,31 +212,40 @@ class RuleEngine:
         Initialize the rule engine.
 
         Args:
-            custom_rules_path: Path to custom_rules.yaml (optional)
+            custom_rules_path: Path to custom_rules.yaml (optional).
+                If None, rules are loaded from the Config singleton to
+                avoid reading the YAML file a second time.
         """
         self.matcher = KeywordMatcher()
         self.custom_rules: Dict[str, Any] = {}
         self.keyword_groups: Dict[str, List[str]] = {}
 
-        # Load custom rules if available
-        if custom_rules_path is None:
-            # Look for custom_rules.yaml in project root
-            project_root = Path(__file__).parent.parent
-            custom_rules_path = project_root / "custom_rules.yaml"
+        if custom_rules_path is not None:
+            self._load_custom_rules_from_file(custom_rules_path)
+        else:
+            self._load_custom_rules_from_config()
 
-        self._load_custom_rules(custom_rules_path)
         self._build_smart_rules()
 
-    def _load_custom_rules(self, path) -> None:
-        """Load custom rules from YAML file."""
+    def _load_custom_rules_from_config(self) -> None:
+        """Load custom rules via the Config singleton (avoids duplicate YAML reads)."""
+        try:
+            from config import get_config
+            config = get_config()
+            self.custom_rules = config.custom_rules or {}
+            self.keyword_groups = self.custom_rules.get('keyword_groups', {})
+        except Exception as e:
+            print(f"Warning: Could not load custom rules from config: {e}")
+            self.custom_rules = {}
+
+    def _load_custom_rules_from_file(self, path) -> None:
+        """Load custom rules directly from a YAML file."""
         try:
             if os.path.exists(path):
                 with open(path, 'r', encoding='utf-8') as f:
                     self.custom_rules = yaml.safe_load(f) or {}
 
-                # Load keyword groups
                 self.keyword_groups = self.custom_rules.get('keyword_groups', {})
-                print(f"Loaded custom rules from {path}")
             else:
                 print(f"No custom rules file found at {path}")
         except Exception as e:
@@ -359,7 +367,7 @@ class RuleEngine:
 
     def _match_priority_rules(self, description: str) -> Optional[MatchResult]:
         """Match against user-defined priority rules."""
-        priority_rules = self.custom_rules.get('priority_rules', [])
+        priority_rules = self.custom_rules.get('priority_rules') or []
 
         for rule in priority_rules:
             if not isinstance(rule, dict):
@@ -399,7 +407,7 @@ class RuleEngine:
 
     def _match_custom_merchants(self, description: str) -> Optional[MatchResult]:
         """Match against user-defined merchant mappings."""
-        custom_merchants = self.custom_rules.get('custom_merchants', {})
+        custom_merchants = self.custom_rules.get('custom_merchants') or {}
 
         if not custom_merchants:
             return None
@@ -429,7 +437,7 @@ class RuleEngine:
         is_credit: bool
     ) -> Optional[MatchResult]:
         """Match against amount-based rules."""
-        amount_rules = self.custom_rules.get('amount_rules', [])
+        amount_rules = self.custom_rules.get('amount_rules') or []
 
         for rule in amount_rules:
             if not isinstance(rule, dict):

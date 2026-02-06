@@ -167,31 +167,117 @@ Respond with ONLY the JSON object, no other text."""
 
     def categorize_batch(
         self,
-        transactions: List[Dict]
+        transactions: List[Dict],
+        chunk_size: int = 10,
     ) -> List[Optional[Tuple[str, str, float]]]:
         """
-        Categorize multiple transactions.
+        Categorize multiple transactions, sending several per API call
+        to reduce HTTP round-trips.
 
         Args:
             transactions: List of dicts with 'description', 'amount', 'is_debit'
+            chunk_size: Number of transactions per API call (default 10)
 
         Returns:
             List of categorization results (same order as input)
         """
-        results = []
+        if not self._client:
+            return [None] * len(transactions)
 
-        for i, txn in enumerate(transactions):
-            if (i + 1) % 10 == 0:
-                print(f"  Categorizing with Haiku: {i + 1}/{len(transactions)}")
+        results: List[Optional[Tuple[str, str, float]]] = []
 
-            result = self.categorize(
-                description=txn.get('description', ''),
-                amount=txn.get('amount'),
-                is_debit=txn.get('is_debit', True)
-            )
-            results.append(result)
+        for start in range(0, len(transactions), chunk_size):
+            chunk = transactions[start : start + chunk_size]
+
+            if (start + len(chunk)) % 20 == 0 or start + len(chunk) == len(transactions):
+                print(f"  Categorizing with Haiku: {start + len(chunk)}/{len(transactions)}")
+
+            chunk_results = self._categorize_chunk(chunk)
+            results.extend(chunk_results)
 
         return results
+
+    def _categorize_chunk(
+        self,
+        transactions: List[Dict],
+    ) -> List[Optional[Tuple[str, str, float]]]:
+        """
+        Send a chunk of transactions in a single API call.
+
+        Falls back to one-at-a-time if the multi-transaction prompt fails.
+        """
+        if len(transactions) == 1:
+            txn = transactions[0]
+            return [self.categorize(
+                description=txn.get('description', ''),
+                amount=txn.get('amount'),
+                is_debit=txn.get('is_debit', True),
+            )]
+
+        category_list = get_category_list_for_prompt()
+
+        # Build a numbered list of transactions
+        lines = []
+        for i, txn in enumerate(transactions, 1):
+            desc = txn.get('description', '')
+            amount = txn.get('amount')
+            is_debit = txn.get('is_debit', True)
+            txn_type = "DR" if is_debit else "CR"
+            amount_str = f" ₹{abs(amount):,.2f}" if amount else ""
+            lines.append(f"{i}. [{txn_type}]{amount_str} {desc}")
+
+        txn_block = "\n".join(lines)
+
+        prompt = f"""Categorize each Indian bank transaction below into one of the given categories.
+
+Transactions:
+{txn_block}
+
+Available categories:
+{category_list}
+
+Respond with ONLY a JSON array of objects, one per transaction in the same order:
+[{{"category": "Cat", "subcategory": "Sub", "confidence": 0.85}}, ...]
+
+Rules:
+- confidence between 0.0 and 1.0
+- Use lower confidence (0.5-0.7) for ambiguous descriptions
+- If unknown, use "Other" > "Uncategorized" with low confidence
+- Match category/subcategory names EXACTLY as listed"""
+
+        try:
+            response = self._client.messages.create(
+                model=HAIKU_MODEL,
+                max_tokens=HAIKU_MAX_TOKENS * len(transactions),
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text.strip()
+
+            # Try to parse as JSON array
+            array_match = re.search(r'\[.*\]', text, re.DOTALL)
+            if array_match:
+                items = json.loads(array_match.group(0))
+                if isinstance(items, list) and len(items) == len(transactions):
+                    results = []
+                    for item in items:
+                        cat = item.get('category', 'Other')
+                        sub = item.get('subcategory', 'Uncategorized')
+                        conf = max(0.0, min(1.0, float(item.get('confidence', 0.5))))
+                        results.append((cat, sub, conf))
+                    return results
+
+        except Exception as e:
+            print(f"Batch Haiku call failed, falling back to individual calls: {e}")
+
+        # Fallback: categorize one at a time
+        return [
+            self.categorize(
+                description=txn.get('description', ''),
+                amount=txn.get('amount'),
+                is_debit=txn.get('is_debit', True),
+            )
+            for txn in transactions
+        ]
 
     def is_available(self) -> bool:
         """

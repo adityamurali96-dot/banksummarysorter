@@ -555,7 +555,7 @@ class CSVParser(BaseParser):
                     if amt is not None:
                         amounts.append(amt)
                         continue
-                except:
+                except (ValueError, TypeError):
                     pass
 
             # Skip cheque numbers (all zeros or IB ITG patterns)

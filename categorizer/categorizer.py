@@ -94,16 +94,25 @@ class TransactionCategorizer:
         print(f"  Rule-based matches: {self._stats['rules_matched']}")
         print(f"  Need Haiku: {len(need_haiku)}")
 
-        # Second pass: Haiku API for unmatched transactions
+        # Second pass: Haiku API for unmatched transactions (batched to reduce API calls)
         if need_haiku and self._haiku_client and self._haiku_client.is_available():
             print(f"  Calling Haiku API for {len(need_haiku)} transactions...")
 
-            for idx, i in enumerate(need_haiku):
-                if (idx + 1) % 20 == 0 or idx == len(need_haiku) - 1:
-                    print(f"    Progress: {idx + 1}/{len(need_haiku)}")
-
+            batch_input = []
+            for i in need_haiku:
                 txn = transactions[i]
-                self._categorize_with_haiku(txn)
+                is_debit = txn.debit is not None and txn.debit > 0
+                batch_input.append({
+                    'description': txn.description,
+                    'amount': txn.debit if is_debit else txn.credit,
+                    'is_debit': is_debit,
+                })
+
+            batch_results = self._haiku_client.categorize_batch(batch_input)
+
+            for i, result in zip(need_haiku, batch_results):
+                txn = transactions[i]
+                self._apply_haiku_result(txn, result)
 
         elif need_haiku and (not self._haiku_client or not self._haiku_client.is_available()):
             print("  Warning: Haiku not available, flagging remaining transactions")
@@ -121,25 +130,19 @@ class TransactionCategorizer:
 
         return transactions
 
-    def _categorize_with_haiku(self, txn: Transaction) -> None:
+    def _apply_haiku_result(
+        self,
+        txn: Transaction,
+        result: Optional[tuple],
+    ) -> None:
         """
-        Categorize a single transaction using Haiku API.
+        Apply a Haiku categorization result to a transaction.
 
         Args:
-            txn: Transaction to categorize (modified in place)
+            txn: Transaction to update (modified in place)
+            result: Tuple of (category, subcategory, confidence) or None
         """
-        # Determine if debit or credit
-        is_debit = txn.debit is not None and txn.debit > 0
-        amount = txn.debit if is_debit else txn.credit
-
-        result = self._haiku_client.categorize(
-            description=txn.description,
-            amount=amount,
-            is_debit=is_debit
-        )
-
         if result is None:
-            # Haiku failed
             txn.category = "Review Required"
             txn.subcategory = "Manual Review Needed"
             txn.categorization_confidence = 0.0
@@ -152,20 +155,35 @@ class TransactionCategorizer:
         category, subcategory, confidence = result
 
         if confidence >= self.confidence_threshold:
-            # Accept Haiku's categorization
             txn.category = category
             txn.subcategory = subcategory
             txn.categorization_confidence = confidence
             txn.categorization_source = "haiku"
             self._stats['haiku_matched'] += 1
         else:
-            # Flag for review but store Haiku's suggestion
             txn.category = "Review Required"
             txn.subcategory = "Manual Review Needed"
             txn.categorization_confidence = confidence
             txn.categorization_source = "flagged"
             txn.haiku_suggestion = f"{category} > {subcategory} (conf: {confidence:.2f})"
             self._stats['flagged'] += 1
+
+    def _categorize_with_haiku(self, txn: Transaction) -> None:
+        """
+        Categorize a single transaction using Haiku API.
+
+        Args:
+            txn: Transaction to categorize (modified in place)
+        """
+        is_debit = txn.debit is not None and txn.debit > 0
+        amount = txn.debit if is_debit else txn.credit
+
+        result = self._haiku_client.categorize(
+            description=txn.description,
+            amount=amount,
+            is_debit=is_debit,
+        )
+        self._apply_haiku_result(txn, result)
 
     def _print_summary(self) -> None:
         """Print categorization summary."""
