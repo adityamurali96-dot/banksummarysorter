@@ -1,0 +1,351 @@
+# =============================================================================
+# Custom Rules Configuration
+# =============================================================================
+# This file allows you to define your own categorization rules without
+# modifying the code. Rules are processed in order - more specific rules
+# should come before general ones.
+#
+# Rule Types:
+#   - keyword: Match if ANY keyword is found in description
+#   - all_keywords: Match if ALL keywords are found
+#   - regex: Match using a regular expression pattern
+#   - amount_range: Match by transaction amount range
+#   - combined: Combine multiple conditions (AND logic)
+#
+# Keyword Matching:
+#   - Keywords are case-insensitive by default
+#   - Use word boundaries for short keywords (e.g., "lic" won't match "public")
+#   - Negative keywords exclude matches (prefix with !)
+#
+# =============================================================================
+
+version: "1.0"
+
+# Priority rules - checked first (for your specific vendors/payees)
+priority_rules:
+  # Example: Your specific rent payee
+  # - name: "My Landlord"
+  #   type: keyword
+  #   keywords: ["JOHN DOE RENT", "LANDLORD JOHN"]
+  #   category: "Bills & Utilities"
+  #   subcategory: "Rent"
+  #   confidence: 0.98
+
+  # Example: Your employer
+  # - name: "My Salary"
+  #   type: keyword
+  #   keywords: ["ACME CORP SALARY", "ACME PAYROLL"]
+  #   category: "Income"
+  #   subcategory: "Salary"
+  #   confidence: 0.99
+
+# Custom merchant mappings - add your frequently used merchants
+custom_merchants:
+  # Format: merchant_pattern: [category, subcategory]
+  # Example:
+  # "local grocery store": ["Shopping", "Groceries"]
+  # "gym membership xyz": ["Bills & Utilities", "Subscriptions"]
+
+# Keyword groups - reusable keyword sets
+keyword_groups:
+  # Food delivery services
+  food_delivery:
+    - swiggy
+    - zomato
+    - uber eats
+    - ubereats
+    - dunzo
+    - food panda
+    - foodpanda
+    - doordash
+    - grubhub
+    - deliveroo
+
+  # Grocery stores (online + offline)
+  groceries:
+    - blinkit
+    - zepto
+    - bigbasket
+    - grofers
+    - jiomart
+    - amazon fresh
+    - instamart
+    - dmart
+    - reliance fresh
+    - reliance smart
+    - big bazaar
+    - spencer
+    - star bazaar
+    - more retail
+    - nature basket
+    - whole foods
+    - trader joe
+    - walmart grocery
+    - target grocery
+    - kroger
+    - safeway
+    - publix
+
+  # Online shopping
+  online_shopping:
+    - amazon
+    - flipkart
+    - myntra
+    - ajio
+    - nykaa
+    - meesho
+    - snapdeal
+    - tatacliq
+    - paytm mall
+    - ebay
+    - alibaba
+    - aliexpress
+    - wish
+    - etsy
+    - shopify
+
+  # Cab/taxi services
+  cab_services:
+    - uber
+    - ola cabs
+    - ola money
+    - rapido
+    - meru
+    - lyft
+    - grab
+    - gojek
+    - didi
+
+  # Fuel/petrol
+  fuel:
+    - petrol
+    - diesel
+    - fuel
+    - gas station
+    - hp pay
+    - indian oil
+    - iocl
+    - bpcl
+    - hpcl
+    - shell
+    - essar
+    - chevron
+    - exxon
+    - mobil
+    - bp
+
+  # Streaming/OTT services
+  streaming:
+    - netflix
+    - hotstar
+    - disney plus
+    - amazon prime
+    - prime video
+    - spotify
+    - youtube premium
+    - apple music
+    - apple tv
+    - hbo max
+    - hulu
+    - paramount
+    - peacock
+    - zee5
+    - sonyliv
+    - voot
+
+  # Banks and financial institutions
+  banks:
+    - hdfc
+    - icici
+    - sbi
+    - axis
+    - kotak
+    - yes bank
+    - idfc
+    - federal bank
+    - canara
+    - pnb
+    - bob
+    - indian bank
+    - union bank
+    - chase
+    - wells fargo
+    - bank of america
+    - citi
+    - capital one
+    - barclays
+    - hsbc
+
+  # Investment platforms
+  investment_platforms:
+    - zerodha
+    - groww
+    - upstox
+    - angel one
+    - angel broking
+    - icici direct
+    - hdfc securities
+    - kotak securities
+    - 5paisa
+    - paytm money
+    - sharekhan
+    - motilal oswal
+    - iifl
+    - kuvera
+    - et money
+    - coin
+    - vanguard
+    - fidelity
+    - schwab
+    - robinhood
+    - etrade
+
+  # Insurance companies
+  insurance:
+    - lic
+    - life insurance
+    - hdfc life
+    - icici prudential
+    - sbi life
+    - max life
+    - bajaj allianz
+    - tata aia
+    - star health
+    - care health
+    - niva bupa
+    - max bupa
+    - acko
+    - digit insurance
+    - policy bazaar
+    - geico
+    - allstate
+    - progressive
+    - state farm
+
+  # Telecom providers
+  telecom:
+    - airtel
+    - jio
+    - reliance jio
+    - vodafone
+    - bsnl
+    - idea
+    - verizon
+    - t-mobile
+    - at&t
+    - sprint
+
+  # Utilities
+  utilities:
+    - electricity
+    - bescom
+    - tata power
+    - adani
+    - bses
+    - water bill
+    - gas bill
+    - lpg
+    - indane
+    - hp gas
+    - bharat gas
+    - mahanagar gas
+    - igl
+
+  # Salary indicators
+  salary_indicators:
+    - salary
+    - payroll
+    - sal for
+    - monthly salary
+    - wages
+    - compensation
+    - pay from
+
+  # Transfer indicators
+  transfer_indicators:
+    - neft
+    - rtgs
+    - imps
+    - upi
+    - fund transfer
+    - bank transfer
+    - wire transfer
+    - swift
+
+  # ATM/Cash indicators
+  atm_cash:
+    - atm
+    - cash withdrawal
+    - cash deposit
+    - cdm
+    - nfs
+
+# Amount-based rules (for transactions that match by amount patterns)
+amount_rules:
+  # Large round numbers often indicate rent
+  - name: "Possible Rent Payment"
+    min_amount: 10000
+    max_amount: 100000
+    round_amount: true  # Only match round amounts (divisible by 1000)
+    type: debit
+    suggestion_category: "Bills & Utilities"
+    suggestion_subcategory: "Rent"
+    flag_for_review: true  # Don't auto-categorize, just suggest
+
+  # Small amounts at food merchants
+  - name: "Probable Food Purchase"
+    min_amount: 50
+    max_amount: 2000
+    type: debit
+    merchant_hint_keywords: ["restaurant", "cafe", "food", "eat"]
+    category: "Food & Dining"
+    subcategory: "Restaurant"
+
+# Context-aware rules (consider transaction patterns)
+context_rules:
+  # If multiple transactions to same payee, might be subscription
+  recurring_detection:
+    enabled: true
+    min_occurrences: 3  # At least 3 times
+    amount_tolerance: 0.05  # 5% variance allowed
+    suggest_category: "Bills & Utilities"
+    suggest_subcategory: "Subscriptions"
+
+  # Self-transfer detection
+  self_transfer_detection:
+    enabled: true
+    patterns:
+      - "self"
+      - "own account"
+      - "between accounts"
+      - same_account_number: true
+
+# Exclusion rules - never categorize these automatically
+exclusions:
+  - name: "Unknown UPI"
+    type: regex
+    pattern: "^UPI[-/]\\d+$"  # Just UPI reference numbers
+    action: flag_for_review
+
+  - name: "Generic NEFT"
+    type: keyword
+    keywords: ["neft", "rtgs", "imps"]
+    negative_keywords: ["salary", "rent", "vendor", "refund"]
+    action: flag_for_review
+
+# Regional settings
+regional:
+  # Date format preference (for ambiguous dates like 01/02/2024)
+  date_format: "dmy"  # Options: dmy, mdy, ymd
+
+  # Currency
+  currency: "INR"
+
+  # Decimal separator
+  decimal_separator: "."
+
+  # Thousand separator
+  thousand_separator: ","
+
+  # Indian numbering system (lakhs, crores)
+  indian_numbering: true

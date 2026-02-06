@@ -1,20 +1,31 @@
 """
 Rule-based categorization for bank transactions.
 
-Contains regex patterns for matching transaction descriptions to categories.
+This module provides backward-compatible rule-based categorization while
+using the new intelligent rule engine under the hood.
+
+The legacy CATEGORY_RULES are still available for reference, but the
+actual categorization now uses the more flexible RuleEngine.
 """
 import re
 from typing import Dict, List, Optional, Tuple
 
 from config import RULE_BASED_CONFIDENCE
 
+# Import the new rule engine
+try:
+    from categorizer.rule_engine import smart_categorize, get_rule_engine
+    _USE_SMART_ENGINE = True
+except ImportError:
+    _USE_SMART_ENGINE = False
+
 # Type alias for category rules
 # Each rule is: (pattern, category, subcategory)
 CategoryRule = Tuple[str, str, str]
 
 # =============================================================================
-# Category Rules
-# Ordered by specificity - more specific patterns should come first
+# Legacy Category Rules (kept for reference and fallback)
+# These patterns are now handled more intelligently by the RuleEngine
 # =============================================================================
 
 CATEGORY_RULES: List[CategoryRule] = [
@@ -291,17 +302,46 @@ CATEGORY_RULES: List[CategoryRule] = [
 
 
 def rule_based_categorize(
-    description: str
+    description: str,
+    amount: Optional[float] = None,
+    is_credit: bool = False
 ) -> Optional[Tuple[str, str, float]]:
     """
     Categorize a transaction description using rule-based matching.
 
+    This function now uses the intelligent RuleEngine which provides:
+    - Flexible keyword matching with word boundaries
+    - User-configurable custom rules via custom_rules.yaml
+    - Semantic understanding of transaction types
+    - Better handling of merchant name variations
+
     Args:
         description: The transaction description to categorize
+        amount: Optional transaction amount (for amount-based rules)
+        is_credit: Whether this is a credit transaction
 
     Returns:
         Tuple of (category, subcategory, confidence) if a match is found,
         None if no rules match
+    """
+    if not description:
+        return None
+
+    # Use the smart rule engine if available
+    if _USE_SMART_ENGINE:
+        result = smart_categorize(description, amount, is_credit)
+        if result:
+            return result
+
+    # Fallback to legacy regex patterns if rule engine fails
+    return _legacy_rule_match(description)
+
+
+def _legacy_rule_match(description: str) -> Optional[Tuple[str, str, float]]:
+    """
+    Legacy regex-based matching (fallback).
+
+    This is used if the smart rule engine is not available or fails.
     """
     if not description:
         return None
@@ -352,30 +392,70 @@ def get_matching_rule(description: str) -> Optional[str]:
 def test_rules():
     """Test the rule-based categorizer with sample descriptions."""
     test_cases = [
-        "SAL FOR OCT 2024",
-        "SWIGGY ORDER 12345",
-        "AMAZON PAY INDIA",
-        "ATM WDL 15000",
-        "NEFT CR FROM XYZ",
-        "SIP PAYMENT HDFC MF",
-        "IRCTC TICKET",
-        "UBER TRIP",
-        "UBER EATS ORDER",
-        "LIC PREMIUM",
-        "GST PAYMENT CHALLAN",
-        "RANDOM UNKNOWN TRANSACTION",
+        # Basic cases
+        ("SAL FOR OCT 2024", None, True),  # Salary
+        ("SWIGGY ORDER 12345", 500, False),  # Food delivery
+        ("AMAZON PAY INDIA", 2000, False),  # Shopping
+        ("ATM WDL 15000", 15000, False),  # ATM
+        ("NEFT CR FROM XYZ", 50000, True),  # Transfer (credit)
+        ("SIP PAYMENT HDFC MF", 5000, False),  # Investment
+        ("IRCTC TICKET", 1500, False),  # Train
+        ("UBER TRIP", 350, False),  # Cab
+        ("UBER EATS ORDER", 450, False),  # Food delivery
+        ("LIC PREMIUM", 25000, False),  # Insurance
+        ("GST PAYMENT CHALLAN", 10000, False),  # Tax
+        ("RANDOM UNKNOWN TRANSACTION", 1000, False),  # Unknown
+
+        # Edge cases to test smart matching
+        ("AMZN PAYMENT", 1500, False),  # Amazon variation
+        ("NFLX SUBSCRIPTION", 650, False),  # Netflix variation
+        ("FLIPKART INTERNET PRIVATE LIMITED", 3000, False),
+        ("INT CR ON SAVINGS", 150, True),  # Interest income
+        ("RENT PAYMENT TO LANDLORD", 25000, False),  # Rent
+        ("HDFC ERGO HEALTH INSURANCE", 15000, False),  # Health insurance
+        ("UPI-PHONEPE-FROM-SELF", 10000, True),  # Self transfer
     ]
 
-    print("\n--- Rule-Based Categorization Test ---\n")
-    for desc in test_cases:
-        result = rule_based_categorize(desc)
+    print("\n--- Smart Rule-Based Categorization Test ---\n")
+    print(f"Using smart engine: {_USE_SMART_ENGINE}\n")
+
+    for item in test_cases:
+        if len(item) == 3:
+            desc, amount, is_credit = item
+        else:
+            desc = item
+            amount = None
+            is_credit = False
+
+        result = rule_based_categorize(desc, amount, is_credit)
         if result:
             cat, subcat, conf = result
-            print(f"'{desc}' -> {cat} > {subcat} (conf: {conf})")
+            print(f"'{desc}' -> {cat} > {subcat} (conf: {conf:.2f})")
         else:
             print(f"'{desc}' -> NO MATCH (will go to Haiku)")
     print()
 
 
+def test_legacy_rules():
+    """Test only the legacy regex rules (for comparison)."""
+    test_cases = [
+        "SAL FOR OCT 2024",
+        "SWIGGY ORDER 12345",
+        "AMAZON PAY INDIA",
+        "ATM WDL 15000",
+    ]
+
+    print("\n--- Legacy Rule Test (regex only) ---\n")
+    for desc in test_cases:
+        result = _legacy_rule_match(desc)
+        if result:
+            cat, subcat, conf = result
+            print(f"'{desc}' -> {cat} > {subcat} (conf: {conf})")
+        else:
+            print(f"'{desc}' -> NO MATCH")
+    print()
+
+
 if __name__ == "__main__":
     test_rules()
+    test_legacy_rules()

@@ -1,8 +1,16 @@
 """
 Configuration and constants for the bank statement processor.
+
+This module provides:
+- Default configurations for parsing and categorization
+- Support for user-configurable settings via environment variables
+- Loading custom rules from YAML files
 """
 import os
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 # =============================================================================
 # Date Formats
@@ -273,3 +281,188 @@ def get_category_list_for_prompt() -> str:
             subcats = ", ".join(subcategories)
             lines.append(f"- {category}: {subcats}")
     return "\n".join(lines)
+
+
+# =============================================================================
+# Flexible Configuration System
+# =============================================================================
+
+class Config:
+    """
+    Flexible configuration manager that supports:
+    - Environment variables
+    - Custom YAML configuration files
+    - Runtime overrides
+    """
+
+    _instance: Optional["Config"] = None
+    _custom_rules: Dict[str, Any] = {}
+    _settings: Dict[str, Any] = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._load_defaults()
+            cls._instance._load_custom_config()
+        return cls._instance
+
+    def _load_defaults(self) -> None:
+        """Load default settings."""
+        self._settings = {
+            # Parsing settings
+            "date_format_preference": os.environ.get("DATE_FORMAT", "dmy"),
+            "amount_format": os.environ.get("AMOUNT_FORMAT", "indian"),
+            "default_currency": os.environ.get("DEFAULT_CURRENCY", "INR"),
+
+            # Categorization settings
+            "confidence_threshold": DEFAULT_CONFIDENCE_THRESHOLD,
+            "rule_based_confidence": RULE_BASED_CONFIDENCE,
+            "use_smart_rules": os.environ.get("USE_SMART_RULES", "true").lower() == "true",
+            "flag_low_confidence": os.environ.get("FLAG_LOW_CONFIDENCE", "true").lower() == "true",
+
+            # API settings
+            "haiku_model": HAIKU_MODEL,
+            "haiku_max_tokens": HAIKU_MAX_TOKENS,
+            "api_retry_count": int(os.environ.get("API_RETRY_COUNT", "3")),
+            "api_timeout": int(os.environ.get("API_TIMEOUT", "30")),
+
+            # File settings
+            "supported_encodings": FILE_ENCODINGS,
+            "max_rows_preview": int(os.environ.get("MAX_ROWS_PREVIEW", "10")),
+
+            # Bank detection
+            "auto_detect_bank": os.environ.get("AUTO_DETECT_BANK", "true").lower() == "true",
+            "default_bank_profile": os.environ.get("DEFAULT_BANK_PROFILE", "generic"),
+        }
+
+    def _load_custom_config(self) -> None:
+        """Load custom configuration from YAML file if available."""
+        # Look for config file in multiple locations
+        config_paths = [
+            Path.cwd() / "config.yaml",
+            Path.cwd() / "config.yml",
+            Path(__file__).parent / "config.yaml",
+            Path.home() / ".banksummarysorter" / "config.yaml",
+        ]
+
+        for config_path in config_paths:
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        custom_config = yaml.safe_load(f) or {}
+                        self._settings.update(custom_config)
+                        print(f"Loaded config from {config_path}")
+                        break
+                except Exception as e:
+                    print(f"Warning: Could not load config from {config_path}: {e}")
+
+        # Load custom rules
+        self._load_custom_rules()
+
+    def _load_custom_rules(self) -> None:
+        """Load custom categorization rules from YAML."""
+        rules_paths = [
+            Path.cwd() / "custom_rules.yaml",
+            Path.cwd() / "custom_rules.yml",
+            Path(__file__).parent / "custom_rules.yaml",
+            Path.home() / ".banksummarysorter" / "custom_rules.yaml",
+        ]
+
+        for rules_path in rules_paths:
+            if rules_path.exists():
+                try:
+                    with open(rules_path, 'r', encoding='utf-8') as f:
+                        self._custom_rules = yaml.safe_load(f) or {}
+                        print(f"Loaded custom rules from {rules_path}")
+                        break
+                except Exception as e:
+                    print(f"Warning: Could not load custom rules from {rules_path}: {e}")
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a configuration value."""
+        return self._settings.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a configuration value at runtime."""
+        self._settings[key] = value
+
+    @property
+    def custom_rules(self) -> Dict[str, Any]:
+        """Get custom categorization rules."""
+        return self._custom_rules
+
+    @property
+    def keyword_groups(self) -> Dict[str, List[str]]:
+        """Get keyword groups from custom rules."""
+        return self._custom_rules.get("keyword_groups", {})
+
+    @property
+    def regional_settings(self) -> Dict[str, Any]:
+        """Get regional settings from custom rules."""
+        return self._custom_rules.get("regional", {
+            "date_format": "dmy",
+            "currency": "INR",
+            "decimal_separator": ".",
+            "thousand_separator": ",",
+            "indian_numbering": True,
+        })
+
+    def get_date_format_preference(self) -> str:
+        """Get the preferred date format (dmy, mdy, ymd)."""
+        regional = self.regional_settings
+        return regional.get("date_format", self.get("date_format_preference", "dmy"))
+
+    def is_indian_numbering(self) -> bool:
+        """Check if Indian numbering system should be used."""
+        regional = self.regional_settings
+        return regional.get("indian_numbering", True)
+
+    def reload(self) -> None:
+        """Reload configuration from files."""
+        self._load_defaults()
+        self._load_custom_config()
+
+
+def get_config() -> Config:
+    """Get the global configuration instance."""
+    return Config()
+
+
+# =============================================================================
+# Helper Functions for Backward Compatibility
+# =============================================================================
+
+def get_date_formats() -> List[str]:
+    """Get date formats in preference order based on config."""
+    config = get_config()
+    preference = config.get_date_format_preference()
+
+    if preference == "mdy":
+        # US format first
+        return [
+            "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y",
+        ] + DATE_FORMATS
+    elif preference == "ymd":
+        # ISO format first
+        return [
+            "%Y-%m-%d", "%Y/%m/%d",
+        ] + DATE_FORMATS
+    else:
+        # Default DMY (most countries including India)
+        return DATE_FORMATS
+
+
+def get_column_keywords() -> Dict[str, List[str]]:
+    """Get all column keywords as a dictionary."""
+    return {
+        "date": DATE_COLUMN_KEYWORDS,
+        "description": DESCRIPTION_COLUMN_KEYWORDS,
+        "debit": DEBIT_COLUMN_KEYWORDS,
+        "credit": CREDIT_COLUMN_KEYWORDS,
+        "balance": BALANCE_COLUMN_KEYWORDS,
+    }
+
+
+def get_skip_keywords() -> List[str]:
+    """Get keywords that indicate rows to skip."""
+    return SKIP_ROW_KEYWORDS
