@@ -26,8 +26,9 @@ from config import (
 )
 from parsers.csv_parser import CSVParser
 from parsers.xlsx_parser import XLSXParser
+from parsers.pdf_parser import PDFPnLParser, ExtractionError
 from categorizer.categorizer import TransactionCategorizer
-from output.excel_generator import generate_output_excel
+from output.excel_generator import generate_output_excel, generate_pnl_excel
 
 
 # =============================================================================
@@ -149,8 +150,8 @@ def upload_file():
 
     # Validate file extension
     file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in ['.csv', '.xlsx', '.xls']:
-        return jsonify({'error': 'Unsupported file format. Please upload CSV or XLSX files.'}), 400
+    if file_ext not in ['.csv', '.xlsx', '.xls', '.pdf']:
+        return jsonify({'error': 'Unsupported file format. Please upload CSV, XLSX, or PDF files.'}), 400
 
     # Generate unique filename
     unique_id = str(uuid.uuid4())[:8]
@@ -161,6 +162,10 @@ def upload_file():
         # Save uploaded file
         file.save(input_path)
         logger.info(f"File uploaded: {file.filename} -> {input_filename}")
+
+        # PDF files use the P&L extraction pipeline
+        if file_ext == '.pdf':
+            return _process_pdf_pnl(input_path, file.filename, unique_id)
 
         # Parse the file
         if file_ext in ['.xlsx', '.xls']:
@@ -240,6 +245,94 @@ def upload_file():
 
     finally:
         # Clean up input file
+        try:
+            if os.path.exists(input_path):
+                os.unlink(input_path)
+        except Exception as e:
+            logger.error(f"Error cleaning up input file: {e}")
+
+
+def _process_pdf_pnl(input_path: str, original_filename: str, unique_id: str):
+    """Handle PDF upload: extract P&L line items and return results."""
+    try:
+        pdf_parser = PDFPnLParser(input_path)
+
+        # Step 1: Identify P&L pages
+        pnl_pages = pdf_parser.identify_pnl_pages()
+        if not pnl_pages:
+            return jsonify({
+                'error': (
+                    'Could not identify any pages containing P&L data in the PDF. '
+                    'The document may not contain a Profit & Loss statement, '
+                    'or the text is not extractable (scanned image).'
+                )
+            }), 400
+
+        # Step 2: Extract line items
+        try:
+            line_items = pdf_parser.extract_all()
+        except ExtractionError as e:
+            return jsonify({'error': f'Extraction failed: {e}'}), 400
+
+        # Step 3: Generate output Excel
+        output_filename = f"pnl_extracted_{unique_id}.xlsx"
+        output_path = os.path.join(OUTPUT_FOLDER, output_filename)
+        summary = pdf_parser.get_summary()
+        generate_pnl_excel(
+            line_items,
+            output_path,
+            column_headers=pdf_parser.column_headers,
+            summary=summary,
+        )
+
+        with _output_files_lock:
+            output_files[output_filename] = datetime.now()
+
+        # Build preview data
+        item_data = []
+        for item in line_items[:50]:
+            item_data.append({
+                'label': item.label,
+                'amounts': [
+                    f"{a:,.2f}" if a is not None else "-"
+                    for a in item.amounts
+                ],
+                'note_ref': item.note_ref or '',
+                'is_total': item.is_total,
+                'indent_level': item.indent_level,
+                'page': item.page_number,
+            })
+
+        logger.info(
+            "Extracted %d P&L line items from %d page(s) in %s",
+            len(line_items), len(pnl_pages), original_filename,
+        )
+
+        return jsonify({
+            'success': True,
+            'mode': 'pnl',
+            'output_file': output_filename,
+            'statistics': {
+                'total_line_items': len(line_items),
+                'pages_identified': len(pnl_pages),
+                'page_numbers': [p.page_number for p in pnl_pages],
+                'page_scores': [
+                    {'page': p.page_number, 'score': round(p.score, 1)}
+                    for p in pnl_pages
+                ],
+                'column_headers': pdf_parser.column_headers,
+            },
+            'line_items': item_data,
+            'total_line_items': len(line_items),
+        })
+
+    except ExtractionError as e:
+        logger.error(f"PDF extraction error for {original_filename}: {e}")
+        return jsonify({'error': f'Extraction failed: {e}'}), 400
+    except Exception as e:
+        logger.error(f"Error processing PDF {original_filename}: {e}")
+        return jsonify({'error': f'PDF processing error: {str(e)}'}), 500
+    finally:
         try:
             if os.path.exists(input_path):
                 os.unlink(input_path)

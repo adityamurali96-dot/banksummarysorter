@@ -23,8 +23,9 @@ from config import DEFAULT_CONFIDENCE_THRESHOLD, get_api_key
 from parsers.base_parser import Transaction
 from parsers.csv_parser import CSVParser
 from parsers.xlsx_parser import XLSXParser
+from parsers.pdf_parser import PDFPnLParser, ExtractionError
 from categorizer.categorizer import TransactionCategorizer
-from output.excel_generator import generate_output_excel
+from output.excel_generator import generate_output_excel, generate_pnl_excel
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -64,7 +65,7 @@ Environment Variables:
     )
     parser.add_argument(
         '--type', '-t',
-        choices=['xlsx', 'csv'],
+        choices=['xlsx', 'csv', 'pdf'],
         default=None,
         help='File type (auto-detected by extension if not specified)'
     )
@@ -122,6 +123,19 @@ Environment Variables:
         help='Sheet name to process (for XLSX, defaults to first sheet)'
     )
 
+    # PDF-specific arguments
+    parser.add_argument(
+        '--page-range',
+        default=None,
+        help='Page range to scan for P&L (e.g. "170-190"), defaults to all pages'
+    )
+    parser.add_argument(
+        '--pnl-page',
+        type=int,
+        default=None,
+        help='Extract P&L from a specific page number (skip identification)'
+    )
+
     # Other options
     parser.add_argument(
         '--include-raw',
@@ -155,13 +169,15 @@ def detect_file_type(filepath: str) -> str:
         filepath: Path to the file
 
     Returns:
-        'xlsx' or 'csv'
+        'xlsx', 'csv', or 'pdf'
     """
     ext = Path(filepath).suffix.lower()
     if ext in ('.xlsx', '.xls'):
         return 'xlsx'
     elif ext in ('.csv', '.txt'):
         return 'csv'
+    elif ext == '.pdf':
+        return 'pdf'
     else:
         raise ValueError(f"Unknown file extension: {ext}. Use --type to specify.")
 
@@ -263,6 +279,10 @@ def main() -> int:
     print(f"Confidence threshold: {args.threshold}")
     print(f"{'='*60}\n")
 
+    # PDF files use the P&L extraction pipeline
+    if file_type == 'pdf':
+        return _process_pdf(args)
+
     # Parse the file
     transactions: List[Transaction] = []
 
@@ -338,6 +358,97 @@ def main() -> int:
 
     print(f"\n{'='*60}")
     print("Processing complete!")
+    print(f"Output saved to: {args.output}")
+    print(f"{'='*60}\n")
+
+    return 0
+
+
+def _process_pdf(args) -> int:
+    """Handle PDF P&L extraction."""
+    print("\nMode: PDF P&L Extraction")
+    print(f"{'='*60}")
+
+    # Parse page range if provided
+    page_range = None
+    if args.page_range:
+        try:
+            parts = args.page_range.split('-')
+            page_range = (int(parts[0]), int(parts[1]))
+            print(f"Scanning pages {page_range[0]} to {page_range[1]}")
+        except (ValueError, IndexError):
+            print(f"Error: Invalid page range '{args.page_range}'. Use format: 170-190")
+            return 1
+
+    pdf_parser = PDFPnLParser(
+        args.input,
+        page_range=page_range,
+    )
+
+    # Step 1: Identify or use specific page
+    if args.pnl_page:
+        print(f"\nExtracting P&L from page {args.pnl_page} (skipping identification)")
+        try:
+            line_items = pdf_parser.extract_from_specific_page(args.pnl_page)
+        except (ExtractionError, ValueError) as e:
+            print(f"Error: {e}")
+            return 1
+    else:
+        print("\nStep 1: Identifying P&L pages...")
+        pnl_pages = pdf_parser.identify_pnl_pages()
+
+        if not pnl_pages:
+            print("Error: Could not identify any pages containing P&L data.")
+            print("Tips:")
+            print("  - Use --page-range to narrow the search (e.g. --page-range 170-190)")
+            print("  - Use --pnl-page to specify the exact page number")
+            print("  - Ensure the PDF contains extractable text (not a scanned image)")
+            return 1
+
+        print(f"\nFound P&L data on {len(pnl_pages)} page(s):")
+        for pm in pnl_pages:
+            print(f"  Page {pm.page_number} (score: {pm.score:.1f}) - matched: {', '.join(pm.matched_keywords[:5])}")
+
+        # Step 2: Extract line items
+        print("\nStep 2: Extracting P&L line items...")
+        try:
+            line_items = pdf_parser.extract_all()
+        except ExtractionError as e:
+            print(f"Error: {e}")
+            return 1
+
+    if not line_items:
+        print("Error: No line items extracted")
+        return 1
+
+    # Print extraction summary
+    print(f"\n--- Extraction Summary ---")
+    print(f"Total line items: {len(line_items)}")
+    if pdf_parser.column_headers:
+        print(f"Column headers: {', '.join(pdf_parser.column_headers)}")
+
+    print("\nExtracted line items:")
+    for item in line_items:
+        indent = "  " * item.indent_level
+        amounts_str = " | ".join(
+            f"{a:,.2f}" if a is not None else "-"
+            for a in item.amounts
+        )
+        note = f" [Note {item.note_ref}]" if item.note_ref else ""
+        total_marker = " **" if item.is_total else ""
+        print(f"  {indent}{item.label}{note}: {amounts_str}{total_marker}")
+
+    # Generate output Excel
+    summary = pdf_parser.get_summary()
+    generate_pnl_excel(
+        line_items,
+        args.output,
+        column_headers=pdf_parser.column_headers,
+        summary=summary,
+    )
+
+    print(f"\n{'='*60}")
+    print("P&L extraction complete!")
     print(f"Output saved to: {args.output}")
     print(f"{'='*60}\n")
 
