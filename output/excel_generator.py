@@ -614,6 +614,127 @@ def _create_statistics_sheet(wb: Workbook, transactions: List[Transaction]) -> N
     ws.column_dimensions['B'].width = 25
 
 
+def generate_pnl_excel(
+    line_items: list,
+    output_path: str,
+    column_headers: list = None,
+    summary: dict = None,
+) -> str:
+    """
+    Generate an Excel workbook from extracted P&L line items.
+
+    Args:
+        line_items: List of PnLLineItem objects
+        output_path: Path to save the Excel file
+        column_headers: Column header labels for amount columns
+        summary: Optional summary dict from the parser
+
+    Returns:
+        Path to the generated file
+    """
+    from parsers.pdf_parser import PnLLineItem
+
+    wb = Workbook()
+    if 'Sheet' in wb.sheetnames:
+        del wb['Sheet']
+
+    ws = wb.create_sheet("P&L Statement")
+
+    # --- Title ---
+    ws.cell(row=1, column=1, value="Statement of Profit and Loss").font = Font(
+        bold=True, size=14
+    )
+
+    # --- Column headers ---
+    col_headers = column_headers or []
+    header_row = 3
+    ws.cell(row=header_row, column=1, value="Particulars").font = HEADER_FONT
+    ws.cell(row=header_row, column=1).fill = HEADER_FILL
+
+    ws.cell(row=header_row, column=2, value="Note").font = HEADER_FONT
+    ws.cell(row=header_row, column=2).fill = HEADER_FILL
+
+    for i, hdr in enumerate(col_headers):
+        cell = ws.cell(row=header_row, column=3 + i, value=hdr)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center')
+
+    # If no column headers detected, use generic labels
+    if not col_headers:
+        num_amount_cols = max(
+            (len(item.amounts) for item in line_items), default=0
+        )
+        for i in range(num_amount_cols):
+            cell = ws.cell(row=header_row, column=3 + i, value=f"Amount {i + 1}")
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+            cell.alignment = Alignment(horizontal='center')
+
+    # --- Data rows ---
+    row_idx = header_row + 1
+    TOTAL_FONT = Font(bold=True)
+    SECTION_FONT = Font(bold=True, size=11)
+    INDENT_MAP = {0: 0, 1: 2, 2: 4}
+
+    for item in line_items:
+        indent = INDENT_MAP.get(item.indent_level, 0)
+        label = ("  " * indent) + item.label
+
+        cell = ws.cell(row=row_idx, column=1, value=label)
+        if item.is_total:
+            cell.font = TOTAL_FONT
+        elif item.indent_level == 0 and not any(
+            a is not None for a in item.amounts
+        ):
+            cell.font = SECTION_FONT
+
+        # Note reference
+        if item.note_ref:
+            ws.cell(row=row_idx, column=2, value=item.note_ref)
+
+        # Amounts
+        for i, amt in enumerate(item.amounts):
+            cell = ws.cell(row=row_idx, column=3 + i, value=amt)
+            cell.number_format = CURRENCY_FORMAT
+            cell.alignment = Alignment(horizontal='right')
+            if item.is_total:
+                cell.font = TOTAL_FONT
+
+        # Alternate row shading (skip totals)
+        if not item.is_total and row_idx % 2 == 0:
+            for col in range(1, 3 + len(item.amounts)):
+                ws.cell(row=row_idx, column=col).fill = ALT_ROW_FILL
+
+        row_idx += 1
+
+    # --- Column widths ---
+    ws.column_dimensions['A'].width = 50
+    ws.column_dimensions['B'].width = 8
+    num_amt_cols = max((len(it.amounts) for it in line_items), default=0)
+    for i in range(num_amt_cols):
+        ws.column_dimensions[_get_column_letter(3 + i)].width = 20
+
+    ws.freeze_panes = f"A{header_row + 1}"
+
+    # --- Summary sheet ---
+    if summary:
+        ws2 = wb.create_sheet("Extraction Info")
+        info = [
+            ("Pages Identified", ", ".join(str(p) for p in summary.get("page_numbers", []))),
+            ("Total Line Items", summary.get("total_line_items", 0)),
+            ("Column Headers", ", ".join(summary.get("column_headers", []))),
+        ]
+        for r, (k, v) in enumerate(info, 1):
+            ws2.cell(row=r, column=1, value=k).font = Font(bold=True)
+            ws2.cell(row=r, column=2, value=str(v))
+        ws2.column_dimensions['A'].width = 25
+        ws2.column_dimensions['B'].width = 50
+
+    wb.save(output_path)
+    return output_path
+
+
 def _get_column_letter(col_num: int) -> str:
     """Convert column number to letter (1 = A, 27 = AA, etc.)."""
     result = ""
